@@ -1,22 +1,55 @@
-# MVP #1 – Status Update
+# PoC Status Update
+
+## Target Architecture (per Project Charter)
 
 ```mermaid
 flowchart LR
-    A["✅ Discovery<br/>Trivy Scan"] --> B["✅ Context<br/>Mock Data"]
-    B --> C["🟡 Reasoning<br/>LLM Agent (Stub)"]
-    C --> D["✅ Approval<br/>Human-in-the-loop"]
-    D --> E["✅ Execution<br/>Simulated"]
-    E --> F["⬜ Real Cluster<br/>Change"]
+    A["✅ Trivy Scan"] --> B["🔴 LangChain AI Agent"]
+    B --> C["🔴 AI-generated K8s Manifest"]
+    C --> D["🔴 Git Pull Request"]
+    D --> E["🟡 Human Review"]
+    E --> F["🔴 ArgoCD Sync"]
 ```
 
-## Pipeline Status
+## Component Status
 
-| Step | Status | Description |
+```mermaid
+flowchart TD
+    subgraph Done["Done"]
+        K8s["Local Kubernetes Minikube"]
+        Trivy["Trivy Scanning"]
+        Finding["Finding Extraction"]
+    end
+
+    subgraph Partial["Partial"]
+        HITL["Human-in-the-loop UI"]
+    end
+
+    subgraph NotStarted["Not Started"]
+        LC["LangChain Agent"]
+        Manifest["AI-generated Manifests"]
+        PR["Git PR Automation"]
+        Argo["ArgoCD Sync"]
+    end
+
+    Done --> Partial --> NotStarted
+```
+
+## Status Table
+
+| Component | Status | Note |
 |---|---|---|
-| 1. Discovery | ✅ Done | Trivy scans a real image, returns real CVE data |
-| 2. Context | ✅ Done (Mock) | Hardcoded test data, NetBox integration planned next |
-| 3. Reasoning | 🟡 Stub | Placeholder logic, real LLM call pending API setup |
-| 4. Approval | ✅ Done | Working human-in-the-loop gate (CLI-based) |
-| 5. Execution | ✅ Done (Simulated) | Displays planned action, no real changes applied yet |
+| Local Kubernetes (Minikube) | Done | Matches required stack |
+| Trivy vulnerability scanning | Done | Matches required stack |
+| Finding extraction/normalization | Done | Reusable for LangChain input |
+| LangChain-based AI Agent | Not started | Required — replaces raw API stub |
+| AI-generated K8s manifests | Not started | Required output format |
+| Git branch + PR automation | Not started | Required for human review step |
+| ArgoCD installation & sync | Not started | Required infrastructure component |
+| Human-in-the-loop via PR review | Partial | Streamlit approval valid concept, must shift to PR-based |
 
-**Result:** Full end-to-end data flow validated — from real vulnerability scan to human approval decision.
+## Out-of-Scope (Confirmed)
+
+- Ansible-based OS/node hardening
+- NetBox/CMDB integration
+- Autonomous execution without human approval
