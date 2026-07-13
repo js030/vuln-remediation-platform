@@ -78,5 +78,11 @@ def generate_manifest(finding: dict) -> str:
             print("[VALIDATION] WARNING: New version is not higher than original — possible hallucination.")
     else:
         print("[VALIDATION] WARNING: Could not extract version number for comparison.")
-
+    fixed_version = finding.get("fixed_version")
+    if fixed_version and match:
+        if match.group(1) == fixed_version:
+            print(f"[VALIDATION] Version matches Trivy's recommended fixed_version ({fixed_version}).")
+        else:
+            print(f"[VALIDATION] WARNING: Version does NOT match Trivy's fixed_version ({fixed_version}).")
+            
     return result
