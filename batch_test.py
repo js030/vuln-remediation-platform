@@ -14,7 +14,7 @@ TEST_IMAGES = [
 ]
 
 REPEATS_PER_FINDING = 3
-MAX_CVES_PER_IMAGE = 5
+MAX_CVES_PER_IMAGE = 1
 
 LOG_FILE = "batch_evaluation_log.csv"
 

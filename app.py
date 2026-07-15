@@ -70,13 +70,13 @@ with st.sidebar:
 
     with st.form("add_image_form", clear_on_submit=True):
         new_image = st.text_input("Add new image", placeholder="redis:5.0.0")
-        submitted = st.form_submit_button("Add", use_container_width=True)
+        submitted = st.form_submit_button("Add", width="stretch")
         if submitted and new_image:
             st.session_state["images"].append(new_image)
             st.rerun()
 
     st.divider()
-    if st.button("Clear Live Scan Results", use_container_width=True):
+    if st.button("Clear Live Scan Results", width="stretch"):
         st.session_state["results"] = []
         st.rerun()
 
@@ -95,7 +95,7 @@ with tab_live:
         )
     with col_btn:
         st.write("")
-        run_scan = st.button("Run Async Scan", type="primary", use_container_width=True)
+        run_scan = st.button("Run Async Scan", type="primary", width="stretch")
 
     if "results" not in st.session_state:
         st.session_state["results"] = []
@@ -164,7 +164,7 @@ with tab_live:
                         entry["reject_reason"] = reject_reason
                         st.rerun()
 
-        if st.button("Export Session Log", use_container_width=True):
+        if st.button("Export Session Log", width="stretch"):
             file_exists = os.path.isfile(LOG_FILE)
             with open(LOG_FILE, "a", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=[
@@ -180,13 +180,13 @@ with tab_live:
 
 with tab_batch:
     col_batch_run, col_batch_reload, _ = st.columns([2, 2, 4])
-    if col_batch_run.button("Run Batch Evaluation", type="primary", use_container_width=True):
+    if col_batch_run.button("Run Batch Evaluation", type="primary", width="stretch"):
         with st.spinner("Running Batch Evaluation in the background..."):
             run_batch_test()
         st.toast("Batch Evaluation complete.")
         st.rerun()
 
-    if col_batch_reload.button("Reload Data", use_container_width=True):
+    if col_batch_reload.button("Reload Data", width="stretch"):
         st.rerun()
 
     st.divider()
@@ -204,6 +204,34 @@ with tab_batch:
         if filter_image != "All":
             df = df[df["image"] == filter_image]
 
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        total_runs = len(df)
+        syntax_success = df["yaml_valid"].mean() * 100 if "yaml_valid" in df.columns and total_runs else 0
+        semantic_success = df["version_updated"].mean() * 100 if "version_updated" in df.columns and total_runs else 0
+        exact_match = df["matches_fixed_version"].mean() * 100 if "matches_fixed_version" in df.columns and total_runs else 0
+        avg_latency = df["latency_seconds"].mean() if "latency_seconds" in df.columns and not df["latency_seconds"].isna().all() else 0
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Total Runs", total_runs)
+        m2.metric("Syntax Success", f"{syntax_success:.1f}%")
+        m3.metric("Version Upgrade", f"{semantic_success:.1f}%")
+        m4.metric("Exact Match", f"{exact_match:.1f}%")
+        m5.metric("Avg. Latency", f"{avg_latency:.2f}s")
+
+        st.dataframe(
+            df,
+            width="stretch",
+            column_config={
+                "timestamp": st.column_config.DatetimeColumn("Timestamp", format="YYYY-MM-DD HH:mm:ss"),
+                "image": "Image",
+                "cve_id": "ID (CVE/Misconfig)",
+                "severity": "Severity",
+                "type": "Type",
+                "yaml_valid": st.column_config.CheckboxColumn("Valid YAML"),
+                "version_updated": st.column_config.CheckboxColumn("Version Up"),
+                "matches_fixed_version": st.column_config.CheckboxColumn("Exact Match"),
+                "latency_seconds": st.column_config.NumberColumn("Latency (s)", format="%.2f")
+            },
+            hide_index=True
+        )
     else:
         st.info(f"No batch data found. Please run an evaluation to generate '{BATCH_LOG_FILE}'.")
