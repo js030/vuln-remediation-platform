@@ -13,8 +13,8 @@ TEST_IMAGES = [
     "python:3.6.0",
 ]
 
-REPEATS_PER_FINDING = 3  # jeden Testfall mehrfach laufen lassen (Konsistenz-Check)
-MAX_CVES_PER_IMAGE = 3
+REPEATS_PER_FINDING = 3
+MAX_CVES_PER_IMAGE = 5
 
 LOG_FILE = "batch_evaluation_log.csv"
 
@@ -31,8 +31,8 @@ def run_batch_test():
                 "timestamp": datetime.now().isoformat(),
                 "image": image, "cve_id": "", "severity": "",
                 "run_number": "", "yaml_valid": False,
-                "version_increased": "", "latency_seconds": "",
-                "error": str(e)
+                "version_updated": False, "matches_fixed_version": False,
+                "latency_seconds": "", "error": str(e)
             })
             continue
 
@@ -49,11 +49,15 @@ def run_batch_test():
                     "error": ""
                 }
                 try:
-                    manifest = generate_manifest(finding)
+                    agent_result = generate_manifest(finding)
                     row["latency_seconds"] = round(time.time() - start, 2)
-                    row["yaml_valid"] = True
+                    row["yaml_valid"] = agent_result["is_valid_yaml"]
+                    row["version_updated"] = agent_result["version_updated"]
+                    row["matches_fixed_version"] = agent_result["matches_fixed_version"]
                 except Exception as e:
                     row["yaml_valid"] = False
+                    row["version_updated"] = False
+                    row["matches_fixed_version"] = False
                     row["error"] = str(e)
                     row["latency_seconds"] = ""
 
@@ -61,7 +65,8 @@ def run_batch_test():
 
     with open(LOG_FILE, "w", newline="") as f:
         fieldnames = ["timestamp", "image", "cve_id", "severity",
-                      "run_number", "yaml_valid", "latency_seconds", "error"]
+                      "run_number", "yaml_valid", "version_updated", 
+                      "matches_fixed_version", "latency_seconds", "error"]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)

@@ -10,12 +10,12 @@ llm = ChatOllama(
 )
 
 manifest_prompt = PromptTemplate(
-    input_variables=["cve_id", "severity", "image_name", "current_version", "fixed_version"],
+    input_variables=["cve_id", "severity", "image_name", "target_version"],
     template="""You are a Kubernetes remediation assistant.
 
 EXAMPLE:
-Input: image=nginx, current_version=1.14.0
-Correct output (only image tag changed, everything else identical to original):
+Input: image=nginx, target_version=1.25.4
+Correct output:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,51 +38,64 @@ Now fix this vulnerability:
 - CVE: {cve_id}
 - Severity: {severity}
 - Affected image: {image_name}
-- Current version: {current_version}
-- Known fixed version (if available): {fixed_version}
 
 STRICT RULES:
-1. If a known fixed version is provided above (not "not specified"), use that exact version.
-2. Otherwise, choose a realistic, higher stable version. Do NOT reuse {current_version}.
-3. Do NOT change replicas, ports, labels, or any other field unless explicitly required for the fix.
-4. Follow the EXACT same structure as the example.
-5. Output ONLY valid YAML, nothing else. No explanations, no markdown code fences, no comments.
+1. Update the image version EXACTLY to: {target_version}.
+2. Do NOT change replicas, ports, labels, or any other field.
+3. Follow the EXACT same structure as the example.
+4. Output ONLY valid YAML, nothing else. No explanations, no markdown code fences, no comments.
 """
 )
 
 chain = manifest_prompt | llm | StrOutputParser()
 
+def calculate_target_version(current_version: str, fixed_version: str) -> str:
+    if fixed_version:
+        return fixed_version
+    
+    try:
+        parts = current_version.split('.')
+        if len(parts) >= 2 and parts[1].isdigit():
+            return f"{parts[0]}.{int(parts[1]) + 1}.0"
+    except Exception:
+        pass
+    
+    return "latest"
 
-def generate_manifest(finding: dict) -> str:
+def generate_manifest(finding: dict) -> dict:
     current_version = finding["affected_asset"].split(":")[-1] if ":" in finding["affected_asset"] else "unknown"
+    fixed_version = finding.get("fixed_version")
+    
+    target_version = calculate_target_version(current_version, fixed_version)
 
-    result = chain.invoke({
+    result_yaml = chain.invoke({
         "cve_id": finding["id"],
         "severity": finding["severity"],
         "image_name": finding["affected_asset"],
-        "current_version": current_version,
-        "fixed_version": finding.get("fixed_version") or "not specified"
+        "target_version": target_version
     })
 
+    is_valid_yaml = False
     try:
-        yaml.safe_load(result)
-        print("[VALIDATION] YAML is syntactically valid.")
-    except yaml.YAMLError as e:
-        print(f"[VALIDATION] WARNING: Invalid YAML generated: {e}")
+        yaml.safe_load(result_yaml)
+        is_valid_yaml = True
+    except yaml.YAMLError:
+        pass
 
-    match = re.search(r'image:\s*\S+:(\d+\.\d+\.\d+)', result)
+    version_updated = False
+    matches_fixed_version = False
+    
+    match = re.search(r'image:\s*\S+:([a-zA-Z0-9\.\-]+)', result_yaml)
     if match:
         new_version = match.group(1)
-        print(f"[VALIDATION] Extracted new version: {new_version} (original: {current_version})")
-        if new_version <= current_version:
-            print("[VALIDATION] WARNING: New version is not higher than original — possible hallucination.")
-    else:
-        print("[VALIDATION] WARNING: Could not extract version number for comparison.")
-    fixed_version = finding.get("fixed_version")
-    if fixed_version and match:
-        if match.group(1) == fixed_version:
-            print(f"[VALIDATION] Version matches Trivy's recommended fixed_version ({fixed_version}).")
-        else:
-            print(f"[VALIDATION] WARNING: Version does NOT match Trivy's fixed_version ({fixed_version}).")
-            
-    return result
+        if new_version == target_version:
+            version_updated = True
+        if fixed_version and new_version == fixed_version:
+            matches_fixed_version = True
+
+    return {
+        "manifest": result_yaml,
+        "is_valid_yaml": is_valid_yaml,
+        "version_updated": version_updated,
+        "matches_fixed_version": matches_fixed_version
+    }
