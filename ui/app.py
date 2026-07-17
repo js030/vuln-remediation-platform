@@ -3,13 +3,18 @@ import streamlit.components.v1 as components
 import csv
 import os
 import time
+import sys
 import difflib
 import pandas as pd
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.discovery.trivy_collector import scan_image
 from src.reasoning.agent import generate_manifest
-from batch_test import run_batch_test
+from scripts.batch_test import run_batch_test
+
+
+LOG_FILE = "logs/evaluation_log.csv"
+BATCH_LOG_FILE = "logs/batch_evaluation_log.csv"
 
 st.set_page_config(
     page_title="Vuln-Remediation",

@@ -14,9 +14,9 @@ TEST_IMAGES = [
 ]
 
 REPEATS_PER_FINDING = 3
-MAX_CVES_PER_IMAGE = 1
+MAX_CVES_PER_IMAGE = 5
 
-LOG_FILE = "batch_evaluation_log.csv"
+LOG_FILE = "logs/batch_evaluation_log.csv"
 
 def run_batch_test():
     rows = []

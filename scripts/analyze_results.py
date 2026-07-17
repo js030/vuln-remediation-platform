@@ -1,6 +1,6 @@
 import pandas as pd
 
-LOG_FILE = "batch_evaluation_log.csv"
+LOG_FILE = "logs/batch_evaluation_log.csv"
 
 def analyze():
     df = pd.read_csv(LOG_FILE)
