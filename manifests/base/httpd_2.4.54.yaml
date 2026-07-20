@@ -14,4 +14,4 @@ spec:
     spec:
       containers:
       - name: httpd
-        image: httpd:2.4.55
+        image: httpd:2.4.49
