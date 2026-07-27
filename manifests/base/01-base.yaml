@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: base-app
-  namespace: default
 spec:
   replicas: 2
   selector:
@@ -15,4 +14,4 @@ spec:
     spec:
       containers:
       - name: base-app
-        image: nginx:1.14.0
+        image: nginx:1.4.9
