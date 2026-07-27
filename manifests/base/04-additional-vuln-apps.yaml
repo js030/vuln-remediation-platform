@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: redis
-  namespace: vuln-remediation
+  namespace: default
 spec:
   replicas: 1
   selector:
@@ -21,7 +21,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: httpd
-  namespace: vuln-remediation
+  namespace: default
 spec:
   replicas: 1
   selector:
