@@ -7,10 +7,11 @@ from langchain_core.output_parsers import StrOutputParser
 llm = ChatOllama(model="llama3.2", temperature=0)
 
 manifest_prompt = PromptTemplate(
-    input_variables=["issue_id", "issue_type", "severity", "image_name", "target_version", "issue_title"],
-    template="""You are a Kubernetes remediation assistant.
+    input_variables=["image_name", "fixed_version"],
+    template="""You are a strict configuration generator with no creative freedom.
+Your only task is to update the 'image' field in the provided Kubernetes manifest.
 
-Base your fixes on this standard Deployment structure:
+Base your fix on this standard Deployment structure:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,45 +30,23 @@ spec:
       - name: base-app
         image: {image_name}
 
-Now fix this issue:
-- ID: {issue_id}
-- Type: {issue_type} (cve or misconfig)
-- Severity: {severity}
-- Title: {issue_title}
-
-STRICT RULES:
-1. If type is 'cve', update the image version EXACTLY to: {target_version}.
-2. If type is 'misconfig', modify the YAML structure (e.g., add securityContext) to address the title.
-3. Output ONLY valid YAML, nothing else. No explanations, no markdown code fences, no comments.
+STRUCTURAL REQUIREMENTS:
+1. Replace the tag of the current image version exactly with: {fixed_version}
+2. The resulting image field must match the format of the original image name but with the new tag.
+3. Do absolutely not change any other values, keys, indentation, or formatting.
+4. Do not add any explanations, markdown blocks, or comments.
+5. Return exclusively the raw YAML manifest.
 """
 )
 
 chain = manifest_prompt | llm | StrOutputParser()
 
-def calculate_target_version(current_version: str, fixed_version: str) -> str:
-    if fixed_version:
-        return fixed_version
-    try:
-        parts = current_version.split('.')
-        if len(parts) >= 2 and parts[1].isdigit():
-            return f"{parts[0]}.{int(parts[1]) + 1}.0"
-    except Exception:
-        pass
-    return "latest"
-
-def generate_manifest(finding: dict) -> dict:
-    current_version = finding["affected_asset"].split(":")[-1] if ":" in finding["affected_asset"] else "unknown"
-    fixed_version = finding.get("fixed_version")
-    
-    target_version = calculate_target_version(current_version, fixed_version) if finding["type"] == "cve" else current_version
+def generate_manifest(finding: dict, fixed_version: str) -> dict:
+    image_name = finding.get("affected_asset", finding.get("image", "unknown"))
 
     result_yaml = chain.invoke({
-        "issue_id": finding["id"],
-        "issue_type": finding["type"],
-        "severity": finding["severity"],
-        "image_name": finding["affected_asset"],
-        "target_version": target_version,
-        "issue_title": finding["title"]
+        "image_name": image_name,
+        "fixed_version": fixed_version
     })
 
     is_valid_yaml = False
@@ -80,17 +59,12 @@ def generate_manifest(finding: dict) -> dict:
     version_updated = False
     matches_fixed_version = False
     
-    if finding["type"] == "cve":
-        match = re.search(r'image:\s*\S+:([a-zA-Z0-9\.\-]+)', result_yaml)
-        if match:
-            new_version = match.group(1)
-            if new_version == target_version:
-                version_updated = True
-            if fixed_version and new_version == fixed_version:
-                matches_fixed_version = True
-    else:
-        version_updated = True
-        matches_fixed_version = True
+    match = re.search(r'image:\s*\S+:([a-zA-Z0-9\.\-]+)', result_yaml)
+    if match:
+        new_version = match.group(1)
+        if new_version == fixed_version:
+            version_updated = True
+            matches_fixed_version = True
 
     return {
         "manifest": result_yaml,
