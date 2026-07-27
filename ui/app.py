@@ -50,7 +50,8 @@ def process_image(image_name):
         entry["type"] = finding.get("type", "cve")
         entry["severity"] = finding["severity"]
         
-        agent_result = generate_manifest(finding)
+        original_manifest = get_base_manifest(image_name)
+        agent_result = generate_manifest(finding, fixed_version, original_manifest)
         entry["manifest"] = agent_result["manifest"]
         entry["yaml_valid"] = agent_result["is_valid_yaml"]
         entry["version_updated"] = agent_result["version_updated"]
