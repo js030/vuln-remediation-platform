@@ -14,4 +14,4 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:5.0.9
+        image: redis:7.0.14
