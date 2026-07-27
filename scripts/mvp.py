@@ -25,7 +25,7 @@ def main():
     
     finding = scan_image(original_image)
     
-    fixed_version = finding.get("FixedVersion")
+    fixed_version = finding.get("fixed_version") or finding.get("FixedVersion")
     if not fixed_version:
         print("[ABORT] No FixedVersion found in the Trivy scan.")
         sys.exit(1)
