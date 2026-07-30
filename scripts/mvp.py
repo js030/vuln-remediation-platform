@@ -75,11 +75,15 @@ def main():
 
         print(f"[AGENT] Generating patched manifest for {deployment_name}...")
         
-        # Pass original manifest as third argument
         agent_result = generate_manifest(finding, fixed_version, original_manifest)
+        manifest_text = agent_result['manifest']
+        
+        import re
+        manifest_text = re.sub(r'image:\s*.*', f'image: {base_image_name}:{fixed_version}', manifest_text)
+        # -----------------------------------------
         
         with open(filepath, "w") as f:
-            f.write(agent_result['manifest'])
+            f.write(manifest_text)
             
         updates_made.append(filepath)
         print(f"[SAVED] {os.path.basename(filepath)} updated.")
