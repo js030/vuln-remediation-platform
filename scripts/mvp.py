@@ -40,7 +40,7 @@ def main():
     
     updates_made = []
 
-    print("[START] Überprüfe alle Manifeste im Verzeichnis...")
+    print("[START] Checking all manifests in directory...")
 
     for filepath in yaml_files:
         with open(filepath, 'r') as f:
@@ -50,14 +50,14 @@ def main():
         if not original_image:
             continue
             
-        print(f"\n[DISCOVERY] Prüfe Deployment '{deployment_name}' ({os.path.basename(filepath)}) mit Image '{original_image}'...")
+        print(f"\n[DISCOVERY] Checking deployment '{deployment_name}' ({os.path.basename(filepath)}) with image '{original_image}'...")
         
         finding = scan_image(original_image)
         if not finding or finding.get("severity") not in ["HIGH", "CRITICAL", "MEDIUM", "LOW"]:
-            print(f"[SKIP] Keine relevanten Schwachstellen gefunden.")
+            print(f"[SKIP] No relevant vulnerabilities found.")
             continue
 
-        print(f"[DISCOVERY] Schwachstelle gefunden: {finding.get('severity', 'UNKNOWN')}")
+        print(f"[DISCOVERY] Vulnerability found: {finding.get('severity', 'UNKNOWN')}")
 
         trivy_fixed = finding.get("fixed_version") or finding.get("FixedVersion")
         fixed_version = None
@@ -70,25 +70,25 @@ def main():
             fixed_version = DEMO_FALLBACK_MAP[original_image]
             
         if not fixed_version:
-            print(f"[ÜBERSPRINGE] Keine sichere Version für {original_image} gefunden.")
+            print(f"[SKIP] No secure version found for {original_image}.")
             continue
 
-        print(f"[AGENT] Generiere gepatchtes Manifest für {deployment_name}...")
+        print(f"[AGENT] Generating patched manifest for {deployment_name}...")
         
-        # Original-Manifest als drittes Argument übergeben
+        # Pass original manifest as third argument
         agent_result = generate_manifest(finding, fixed_version, original_manifest)
         
         with open(filepath, "w") as f:
             f.write(agent_result['manifest'])
             
         updates_made.append(filepath)
-        print(f"[SAVED] {os.path.basename(filepath)} aktualisiert.")
+        print(f"[SAVED] {os.path.basename(filepath)} updated.")
 
     if not updates_made:
-        print("\n[FERTIG] Keine Updates notwendig. Beende.")
+        print("\n[DONE] No updates necessary. Exiting.")
         sys.exit(0)
 
-    print("\n[GIT] Erstelle gebündelten Pull Request...")
+    print("\n[GIT] Creating bundled Pull Request...")
     branch_name = "remediation/bulk-update"
     
     try:
@@ -109,9 +109,9 @@ def main():
             "--base", "main"
         ], check=True)
         
-        print("[DONE] Pull Request erstellt!")
+        print("[DONE] Pull Request created!")
     except subprocess.CalledProcessError as e:
-        print(f"[FEHLER] Git-Operation fehlgeschlagen: {e}")
+        print(f"[ERROR] Git operation failed: {e}")
 
 if __name__ == "__main__":
     main()
