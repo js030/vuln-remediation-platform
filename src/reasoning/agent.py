@@ -23,7 +23,6 @@ STRUCTURAL REQUIREMENTS:
 )
 
 chain = manifest_prompt | llm | StrOutputParser()
-
 def generate_manifest(finding: dict, fixed_version: str, original_manifest: str) -> dict:
     result_yaml = chain.invoke({
         "original_manifest": original_manifest,
