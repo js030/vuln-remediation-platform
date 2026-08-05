@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:5.0.9
+        image: redis:7.0.14
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,4 +34,4 @@ spec:
     spec:
       containers:
       - name: httpd
-        image: httpd:2.4.49
+        image: httpd:2.4.58
