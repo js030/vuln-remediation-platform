@@ -33,6 +33,13 @@ def image_exists_in_registry(image_ref):
         return False
 
 
+def split_yaml_documents(content):
+    """Teilt eine Multi-Dokument-YAML-Datei anhand von '---' in einzelne
+    Text-Chunks auf, ohne die Formatierung der einzelnen Dokumente zu verändern."""
+    chunks = re.split(r'(?m)^---\s*$', content)
+    return chunks
+
+
 def extract_image_and_name(yaml_content):
     try:
         doc = yaml.safe_load(yaml_content)
@@ -46,26 +53,6 @@ def extract_image_and_name(yaml_content):
     return None, None
 
 
-def log_run(deployment_name, original_image, fixed_version, finding, agent_result, latency, attempts, accepted, rejection_reason=None):
-    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-    entry = {
-        "timestamp": time.time(),
-        "deployment": deployment_name,
-        "original_image": original_image,
-        "fixed_version": fixed_version,
-        "severity": finding.get("severity") if finding else None,
-        "latency_seconds": round(latency, 2),
-        "attempts": attempts,
-        "is_valid_yaml": agent_result.get("is_valid_yaml") if agent_result else None,
-        "version_updated": agent_result.get("version_updated") if agent_result else None,
-        "matches_fixed_version": agent_result.get("matches_fixed_version") if agent_result else None,
-        "accepted": accepted,
-        "rejection_reason": rejection_reason,
-    }
-    with open(LOG_FILE, "a") as f:
-        f.write(json.dumps(entry) + "\n")
-
-
 def apply_targeted_image_fix(manifest_text, original_image, base_image_name, fixed_version):
     """Ersetzt gezielt nur die Image-Zeile des ursprünglichen Images,
     statt pauschal alle 'image:'-Vorkommen zu überschreiben."""
@@ -77,13 +64,11 @@ def apply_targeted_image_fix(manifest_text, original_image, base_image_name, fix
         count=1
     )
     if count == 0:
-        # Fallback: falls das LLM das Image bereits selbst korrekt gesetzt hat
-        # oder das Original-Image im Text leicht abweicht, keine Änderung erzwingen
         return manifest_text, False
     return patched, True
 
 
-def validate_final_manifest(manifest_text):
+def validate_final_manifest(manifest_text, expected_image=None):
     """Letzte Validierungsschranke, bevor ein Manifest übernommen wird."""
     try:
         parsed = yaml.safe_load(manifest_text)
@@ -92,6 +77,15 @@ def validate_final_manifest(manifest_text):
 
     if not parsed or parsed.get("kind") != "Deployment":
         return False, "Kein valides Deployment-Objekt (kind fehlt oder falsch)"
+
+    if expected_image:
+        try:
+            actual_image = parsed["spec"]["template"]["spec"]["containers"][0]["image"]
+        except (KeyError, IndexError, TypeError):
+            return False, "Image-Feld nicht auffindbar"
+
+        if actual_image != expected_image:
+            return False, f"Image-Feld inkorrekt: erwartet '{expected_image}', erhalten '{actual_image}'"
 
     return True, None
 
@@ -116,6 +110,97 @@ def generate_manifest_with_retry(finding, fixed_version, original_manifest, max_
     return last_result, max_retries + 1
 
 
+def log_run(deployment_name, original_image, fixed_version, finding, agent_result, latency, attempts, accepted, rejection_reason=None):
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+    entry = {
+        "timestamp": time.time(),
+        "deployment": deployment_name,
+        "original_image": original_image,
+        "fixed_version": fixed_version,
+        "severity": finding.get("severity") if finding else None,
+        "latency_seconds": round(latency, 2),
+        "attempts": attempts,
+        "is_valid_yaml": agent_result.get("is_valid_yaml") if agent_result else None,
+        "version_updated": agent_result.get("version_updated") if agent_result else None,
+        "matches_fixed_version": agent_result.get("matches_fixed_version") if agent_result else None,
+        "accepted": accepted,
+        "rejection_reason": rejection_reason,
+    }
+    with open(LOG_FILE, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def process_document(chunk, filepath):
+    """Verarbeitet ein einzelnes YAML-Dokument (aus einer Multi-Dokument-Datei
+    oder einer Single-Dokument-Datei) und gibt (neuer_inhalt, wurde_geaendert) zurück."""
+    original_image, deployment_name = extract_image_and_name(chunk)
+    if not original_image:
+        return chunk, False
+
+    print(f"\n[DISCOVERY] Checking deployment '{deployment_name}' ({os.path.basename(filepath)}) with image '{original_image}'...")
+
+    try:
+        finding = scan_image(original_image)
+    except Exception as e:
+        print(f"[ERROR] Trivy scan failed for {original_image}: {e}")
+        log_run(deployment_name, original_image, None, {}, None, 0.0, 0, accepted=False,
+                 rejection_reason=f"trivy_scan_failed: {e}")
+        return chunk, False
+
+    if not finding or finding.get("severity") not in ["HIGH", "CRITICAL", "MEDIUM", "LOW"]:
+        print(f"[SKIP] No relevant vulnerabilities found.")
+        return chunk, False
+
+    print(f"[DISCOVERY] Vulnerability found: {finding.get('severity', 'UNKNOWN')}")
+
+    trivy_fixed = finding.get("fixed_version") or finding.get("FixedVersion")
+    fixed_version = None
+    base_image_name = original_image.split(":")[0]
+
+    if trivy_fixed and image_exists_in_registry(f"{base_image_name}:{trivy_fixed}"):
+        fixed_version = trivy_fixed
+
+    if not fixed_version and original_image in DEMO_FALLBACK_MAP:
+        fixed_version = DEMO_FALLBACK_MAP[original_image]
+
+    if not fixed_version:
+        print(f"[SKIP] No secure version found for {original_image}.")
+        return chunk, False
+
+    print(f"[AGENT] Generating patched manifest for {deployment_name}...")
+
+    start = time.time()
+    agent_result, attempts = generate_manifest_with_retry(finding, fixed_version, chunk)
+    latency = time.time() - start
+
+    if not agent_result or not agent_result.get("manifest"):
+        print(f"[REJECTED] {deployment_name}: LLM lieferte keinen verwertbaren Output.")
+        log_run(deployment_name, original_image, fixed_version, finding, agent_result or {},
+                 latency, attempts, accepted=False, rejection_reason="no_manifest_returned")
+        return chunk, False
+
+    manifest_text = agent_result['manifest']
+
+    manifest_text, replaced = apply_targeted_image_fix(
+        manifest_text, original_image, base_image_name, fixed_version
+    )
+
+    expected_image = f"{base_image_name}:{fixed_version}"
+    final_valid, rejection_reason = validate_final_manifest(manifest_text, expected_image=expected_image)
+
+    if not final_valid:
+        print(f"[REJECTED] {deployment_name}: wird NICHT übernommen ({rejection_reason}).")
+        log_run(deployment_name, original_image, fixed_version, finding, agent_result,
+                 latency, attempts, accepted=False, rejection_reason=rejection_reason)
+        return chunk, False
+
+    print(f"[SAVED] {deployment_name} in {os.path.basename(filepath)} updated. (Versuche: {attempts}, Latenz: {latency:.2f}s)")
+    log_run(deployment_name, original_image, fixed_version, finding, agent_result,
+             latency, attempts, accepted=True)
+
+    return manifest_text, True
+
+
 def main():
     manifest_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'manifests', 'base'))
     yaml_files = glob.glob(os.path.join(manifest_dir, "*.yaml"))
@@ -126,78 +211,26 @@ def main():
 
     for filepath in yaml_files:
         with open(filepath, 'r') as f:
-            original_manifest = f.read()
+            full_content = f.read()
 
-        original_image, deployment_name = extract_image_and_name(original_manifest)
-        if not original_image:
-            continue
+        doc_chunks = split_yaml_documents(full_content)
+        new_chunks = []
+        file_changed = False
 
-        print(f"\n[DISCOVERY] Checking deployment '{deployment_name}' ({os.path.basename(filepath)}) with image '{original_image}'...")
+        for chunk in doc_chunks:
+            if not chunk.strip():
+                new_chunks.append(chunk)
+                continue
 
-        try:
-            finding = scan_image(original_image)
-        except Exception as e:
-            print(f"[ERROR] Trivy scan failed for {original_image}: {e}")
-            log_run(deployment_name, original_image, None, {}, None, 0.0, 0, accepted=False,
-                     rejection_reason=f"trivy_scan_failed: {e}")
-            continue
+            new_content, changed = process_document(chunk, filepath)
+            new_chunks.append(new_content)
+            if changed:
+                file_changed = True
 
-        if not finding or finding.get("severity") not in ["HIGH", "CRITICAL", "MEDIUM", "LOW"]:
-            print(f"[SKIP] No relevant vulnerabilities found.")
-            continue
-
-        print(f"[DISCOVERY] Vulnerability found: {finding.get('severity', 'UNKNOWN')}")
-
-        trivy_fixed = finding.get("fixed_version") or finding.get("FixedVersion")
-        fixed_version = None
-        base_image_name = original_image.split(":")[0]
-
-        if trivy_fixed and image_exists_in_registry(f"{base_image_name}:{trivy_fixed}"):
-            fixed_version = trivy_fixed
-
-        if not fixed_version and original_image in DEMO_FALLBACK_MAP:
-            fixed_version = DEMO_FALLBACK_MAP[original_image]
-
-        if not fixed_version:
-            print(f"[SKIP] No secure version found for {original_image}.")
-            continue
-
-        print(f"[AGENT] Generating patched manifest for {deployment_name}...")
-
-        start = time.time()
-        agent_result, attempts = generate_manifest_with_retry(finding, fixed_version, original_manifest)
-        latency = time.time() - start
-
-        if not agent_result or not agent_result.get("manifest"):
-            print(f"[REJECTED] {deployment_name}: LLM lieferte keinen verwertbaren Output.")
-            log_run(deployment_name, original_image, fixed_version, finding, agent_result or {},
-                     latency, attempts, accepted=False, rejection_reason="no_manifest_returned")
-            continue
-
-        manifest_text = agent_result['manifest']
-
-        # Gezielter Fix: nur die betroffene Image-Zeile ersetzen
-        manifest_text, replaced = apply_targeted_image_fix(
-            manifest_text, original_image, base_image_name, fixed_version
-        )
-
-        # Letzte Validierungsschranke vor dem Schreiben
-        final_valid, rejection_reason = validate_final_manifest(manifest_text)
-
-        if not final_valid:
-            print(f"[REJECTED] {deployment_name}: wird NICHT übernommen ({rejection_reason}).")
-            log_run(deployment_name, original_image, fixed_version, finding, agent_result,
-                     latency, attempts, accepted=False, rejection_reason=rejection_reason)
-            continue
-
-        with open(filepath, "w") as f:
-            f.write(manifest_text)
-
-        updates_made.append(filepath)
-        print(f"[SAVED] {os.path.basename(filepath)} updated. (Versuche: {attempts}, Latenz: {latency:.2f}s)")
-
-        log_run(deployment_name, original_image, fixed_version, finding, agent_result,
-                 latency, attempts, accepted=True)
+        if file_changed:
+            with open(filepath, "w") as f:
+                f.write("\n---\n".join(c.strip("\n") for c in new_chunks))
+            updates_made.append(filepath)
 
     if not updates_made:
         print("\n[DONE] No updates necessary or all candidates rejected. Exiting.")
