@@ -1,2 +1,10 @@
 logs/
 ollama.log
+ollama.log
+*.log
+logs/*.jsonl
+.DS_Store
+__pycache__/
+*.pyc
+.vscode/
+.idea/
