@@ -1,21 +1,21 @@
 nohup: ignoring input
-time=2026-08-05T18:29:30.918Z level=INFO source=routes.go:1947 msg="server config" env="map[CUDA_VISIBLE_DEVICES: GGML_VK_VISIBLE_DEVICES: GPU_DEVICE_ORDINAL: HIP_VISIBLE_DEVICES: HSA_OVERRIDE_GFX_VERSION: HTTPS_PROXY: HTTP_PROXY: LLAMA_ARG_FIT: LLAMA_ARG_FIT_TARGET: NO_PROXY: OLLAMA_CONTEXT_LENGTH:0 OLLAMA_DEBUG:INFO OLLAMA_DEBUG_LOG_REQUESTS:false OLLAMA_EDITOR: OLLAMA_FLASH_ATTENTION:false OLLAMA_GO_TEMPLATE:true OLLAMA_GPU_OVERHEAD:0 OLLAMA_HOST:http://127.0.0.1:11434 OLLAMA_IGPU_ENABLE: OLLAMA_KEEP_ALIVE:5m0s OLLAMA_KV_CACHE_TYPE: OLLAMA_LLM_LIBRARY: OLLAMA_LOAD_TIMEOUT:5m0s OLLAMA_MAX_LOADED_MODELS:0 OLLAMA_MAX_QUEUE:512 OLLAMA_MAX_TRANSFER_STREAMS:4 OLLAMA_MODELS:/home/vscode/.ollama/models OLLAMA_NOHISTORY:false OLLAMA_NOPRUNE:false OLLAMA_NO_CLOUD:false OLLAMA_NUM_PARALLEL:1 OLLAMA_ORIGINS:[http://localhost https://localhost http://localhost:* https://localhost:* http://127.0.0.1 https://127.0.0.1 http://127.0.0.1:* https://127.0.0.1:* http://0.0.0.0 https://0.0.0.0 http://0.0.0.0:* https://0.0.0.0:* app://* file://* tauri://* vscode-webview://* vscode-file://*] OLLAMA_REMOTES:[ollama.com] OLLAMA_SCHED_SPREAD:false OLLAMA_VULKAN:true ROCR_VISIBLE_DEVICES: http_proxy: https_proxy: no_proxy:]"
-time=2026-08-05T18:29:30.918Z level=INFO source=routes.go:1949 msg="Ollama cloud disabled: false"
-time=2026-08-05T18:29:31.020Z level=INFO source=images.go:883 msg="total blobs: 10"
-time=2026-08-05T18:29:31.020Z level=INFO source=images.go:890 msg="total unused blobs removed: 0"
-time=2026-08-05T18:29:31.021Z level=INFO source=routes.go:2004 msg="Listening on 127.0.0.1:11434 (version 0.31.2)"
-time=2026-08-05T18:29:31.040Z level=INFO source=runner.go:60 msg="discovering available GPUs..."
-time=2026-08-05T18:29:31.327Z level=INFO source=model_recommendations.go:177 msg="model recommendations cache sleep scheduled" wait=3h23m1.643660607s consecutive_failures=0
-time=2026-08-05T18:29:31.466Z level=INFO source=model_list_cache.go:112 msg="model list cache hydration complete" models=2 failures=0 elapsed=445.203514ms
-time=2026-08-05T18:29:33.674Z level=INFO source=types.go:50 msg="inference compute" id=cpu library=cpu compute="" name=cpu description=cpu libdirs=ollama driver="" pci_id="" type="" total="15.6 GiB" available="7.8 GiB"
-time=2026-08-05T18:29:33.675Z level=INFO source=routes.go:2054 msg="vram-based default context" total_vram="0 B" default_num_ctx=4096
-time=2026-08-05T18:37:15.671Z level=INFO source=sched.go:1158 msg="disabling mmap for llama-server load by default" model=/home/vscode/.ollama/models/blobs/sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff reason=cpu
-time=2026-08-05T18:37:15.672Z level=INFO source=server.go:109 msg="using llama-server for model" model=/home/vscode/.ollama/models/blobs/sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff
-time=2026-08-05T18:37:15.673Z level=INFO source=llama_server.go:433 msg="starting llama-server" cmd="/usr/local/lib/ollama/llama-server --model /home/vscode/.ollama/models/blobs/sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff --port 40291 --host 127.0.0.1 --no-webui --offline -c 4096 -np 1 --log-verbosity 4 --no-log-prefix --no-log-timestamps --no-jinja --chat-template chatml --no-mmap --flash-attn auto -b 512 -ub 512 --context-shift --keep 4"
-time=2026-08-05T18:37:15.673Z level=INFO source=sched.go:623 msg="system memory" total="15.6 GiB" free="9.4 GiB" free_swap="0 B"
-time=2026-08-05T18:37:15.674Z level=INFO source=llama_server.go:1001 msg="loading model via llama-server" model=/home/vscode/.ollama/models/blobs/sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff
-time=2026-08-05T18:37:15.674Z level=INFO source=llama_server.go:1248 msg="waiting for llama-server to start responding"
-time=2026-08-05T18:37:15.676Z level=INFO source=llama_server.go:1303 msg="waiting for llama-server to become available" status="llm server not responding"
+time=2026-08-06T06:44:41.286Z level=INFO source=routes.go:1947 msg="server config" env="map[CUDA_VISIBLE_DEVICES: GGML_VK_VISIBLE_DEVICES: GPU_DEVICE_ORDINAL: HIP_VISIBLE_DEVICES: HSA_OVERRIDE_GFX_VERSION: HTTPS_PROXY: HTTP_PROXY: LLAMA_ARG_FIT: LLAMA_ARG_FIT_TARGET: NO_PROXY: OLLAMA_CONTEXT_LENGTH:0 OLLAMA_DEBUG:INFO OLLAMA_DEBUG_LOG_REQUESTS:false OLLAMA_EDITOR: OLLAMA_FLASH_ATTENTION:false OLLAMA_GO_TEMPLATE:true OLLAMA_GPU_OVERHEAD:0 OLLAMA_HOST:http://127.0.0.1:11434 OLLAMA_IGPU_ENABLE: OLLAMA_KEEP_ALIVE:5m0s OLLAMA_KV_CACHE_TYPE: OLLAMA_LLM_LIBRARY: OLLAMA_LOAD_TIMEOUT:5m0s OLLAMA_MAX_LOADED_MODELS:0 OLLAMA_MAX_QUEUE:512 OLLAMA_MAX_TRANSFER_STREAMS:4 OLLAMA_MODELS:/home/vscode/.ollama/models OLLAMA_NOHISTORY:false OLLAMA_NOPRUNE:false OLLAMA_NO_CLOUD:false OLLAMA_NUM_PARALLEL:1 OLLAMA_ORIGINS:[http://localhost https://localhost http://localhost:* https://localhost:* http://127.0.0.1 https://127.0.0.1 http://127.0.0.1:* https://127.0.0.1:* http://0.0.0.0 https://0.0.0.0 http://0.0.0.0:* https://0.0.0.0:* app://* file://* tauri://* vscode-webview://* vscode-file://*] OLLAMA_REMOTES:[ollama.com] OLLAMA_SCHED_SPREAD:false OLLAMA_VULKAN:true ROCR_VISIBLE_DEVICES: http_proxy: https_proxy: no_proxy:]"
+time=2026-08-06T06:44:41.286Z level=INFO source=routes.go:1949 msg="Ollama cloud disabled: false"
+time=2026-08-06T06:44:41.295Z level=INFO source=images.go:883 msg="total blobs: 10"
+time=2026-08-06T06:44:41.295Z level=INFO source=images.go:890 msg="total unused blobs removed: 0"
+time=2026-08-06T06:44:41.297Z level=INFO source=routes.go:2004 msg="Listening on 127.0.0.1:11434 (version 0.31.2)"
+time=2026-08-06T06:44:41.306Z level=INFO source=runner.go:60 msg="discovering available GPUs..."
+time=2026-08-06T06:44:41.528Z level=INFO source=model_list_cache.go:112 msg="model list cache hydration complete" models=2 failures=0 elapsed=231.354177ms
+time=2026-08-06T06:44:42.030Z level=INFO source=model_recommendations.go:177 msg="model recommendations cache sleep scheduled" wait=3h33m3.159242338s consecutive_failures=0
+time=2026-08-06T06:44:43.464Z level=INFO source=types.go:50 msg="inference compute" id=cpu library=cpu compute="" name=cpu description=cpu libdirs=ollama driver="" pci_id="" type="" total="15.6 GiB" available="8.0 GiB"
+time=2026-08-06T06:44:43.464Z level=INFO source=routes.go:2054 msg="vram-based default context" total_vram="0 B" default_num_ctx=4096
+time=2026-08-06T06:46:25.341Z level=INFO source=sched.go:1158 msg="disabling mmap for llama-server load by default" model=/home/vscode/.ollama/models/blobs/sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff reason=cpu
+time=2026-08-06T06:46:25.341Z level=INFO source=server.go:109 msg="using llama-server for model" model=/home/vscode/.ollama/models/blobs/sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff
+time=2026-08-06T06:46:25.342Z level=INFO source=llama_server.go:433 msg="starting llama-server" cmd="/usr/local/lib/ollama/llama-server --model /home/vscode/.ollama/models/blobs/sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff --port 45769 --host 127.0.0.1 --no-webui --offline -c 4096 -np 1 --log-verbosity 4 --no-log-prefix --no-log-timestamps --no-jinja --chat-template chatml --no-mmap --flash-attn auto -b 512 -ub 512 --context-shift --keep 4"
+time=2026-08-06T06:46:25.342Z level=INFO source=sched.go:623 msg="system memory" total="15.6 GiB" free="8.0 GiB" free_swap="0 B"
+time=2026-08-06T06:46:25.343Z level=INFO source=llama_server.go:1001 msg="loading model via llama-server" model=/home/vscode/.ollama/models/blobs/sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff
+time=2026-08-06T06:46:25.343Z level=INFO source=llama_server.go:1248 msg="waiting for llama-server to start responding"
+time=2026-08-06T06:46:25.343Z level=INFO source=llama_server.go:1303 msg="waiting for llama-server to become available" status="llm server not responding"
 cmn  common_param: common_params_print_info: build 1 (cb295bf59) with GNU 11.2.1 for Linux x86_64
 cmn  common_param: common_params_print_info: verbosity = 4 (adjust with the `-lv N` CLI arg)
 cmn  common_param: device_info:
@@ -30,14 +30,14 @@ srv    load_model: local path '/home/vscode/.ollama/models/blobs/sha256-dde5aa3f
 cmn  common_init_: fitting params to device memory ...
 cmn  common_init_: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
 common_params_fit_impl: getting device memory data for initial parameters:
-time=2026-08-05T18:37:15.929Z level=INFO source=llama_server.go:1303 msg="waiting for llama-server to become available" status="llm server loading model"
+time=2026-08-06T06:46:25.595Z level=INFO source=llama_server.go:1303 msg="waiting for llama-server to become available" status="llm server loading model"
 common_memory_breakdown_print: | memory breakdown [MiB] | total   free    self   model   context   compute    unaccounted |
 common_memory_breakdown_print: |   - Host               |                 1142 =   618 +     448 +      76                |
 common_memory_breakdown_print: |   - CPU_REPACK         |                 1299 =  1299 +       0 +       0                |
 common_params_fit_impl: projected to use 1142 MiB of host memory vs. 15995 MiB of total host memory
 common_params_fit_impl: will leave 14852 >= 1024 MiB of system memory, no changes needed
 common_fit_params: successfully fit params to free device memory
-common_fit_params: fitting params to free memory took 0.44 seconds
+common_fit_params: fitting params to free memory took 0.37 seconds
 llama_model_loader: loaded meta data with 30 key-value pairs and 255 tensors from /home/vscode/.ollama/models/blobs/sha256-dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff (version GGUF V3 (latest))
 llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
 llama_model_loader: - kv   0:                       general.architecture str              = llama
@@ -171,7 +171,7 @@ sched_reserve: fused Gated Delta Net (chunked) enabled
 sched_reserve:        CPU compute buffer size =    76.01 MiB
 sched_reserve: graph nodes  = 874
 sched_reserve: graph splits = 1
-sched_reserve: reserve took 3.13 ms, sched copies = 1
+sched_reserve: reserve took 2.44 ms, sched copies = 1
 cmn  common_init_: warming up the model with an empty run - please wait ... (--no-warmup to disable)
 srv    load_model: initializing, n_slots = 1, n_ctx_slot = 4096, kv_unified = 'false'
 spec common_specu: no implementations specified for speculative decoding
@@ -193,13 +193,13 @@ How are you?<|im_end|>
 '
 srv          init: init: chat template, thinking = 0
 srv  llama_server: model loaded
-srv  llama_server: listening on http://127.0.0.1:40291
+srv  llama_server: listening on http://127.0.0.1:45769
 srv  update_slots: all slots are idle
-time=2026-08-05T18:39:38.563Z level=INFO source=llama_server.go:1315 msg="llama-server started in 142.89 seconds"
-time=2026-08-05T18:39:38.620Z level=INFO source=images.go:373 msg="template selection" model=registry.ollama.ai/library/llama3.2:latest selected=go_template renderer="" parser="" go_template="[completion tools]" chat_template="[tools completion]" harmony=null renderer_parser=null
-time=2026-08-05T18:39:38.620Z level=INFO source=sched.go:739 msg="loaded runners" count=1
-time=2026-08-05T18:39:38.620Z level=INFO source=llama_server.go:1248 msg="waiting for llama-server to start responding"
-time=2026-08-05T18:39:38.621Z level=INFO source=llama_server.go:1315 msg="llama-server started in 142.95 seconds"
+time=2026-08-06T06:48:39.955Z level=INFO source=llama_server.go:1315 msg="llama-server started in 134.61 seconds"
+time=2026-08-06T06:48:40.025Z level=INFO source=images.go:373 msg="template selection" model=registry.ollama.ai/library/llama3.2:latest selected=go_template renderer="" parser="" go_template="[completion tools]" chat_template="[tools completion]" harmony=null renderer_parser=null
+time=2026-08-06T06:48:40.025Z level=INFO source=sched.go:739 msg="loaded runners" count=1
+time=2026-08-06T06:48:40.025Z level=INFO source=llama_server.go:1248 msg="waiting for llama-server to start responding"
+time=2026-08-06T06:48:40.026Z level=INFO source=llama_server.go:1315 msg="llama-server started in 134.68 seconds"
 slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
 srv  get_availabl: updating prompt cache
 srv          load:  - looking for better prompt, base f_keep = -1.000, sim = 0.000
@@ -212,14 +212,65 @@ slot launch_slot_: id  0 | task -1 | sampler params:
 	top_k = 40, top_p = 0.900, min_p = 0.000, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.000
 	mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000, adaptive_target = -1.000, adaptive_decay = 0.900
 slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
-slot   operator(): id  0 | task 0 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 207
+slot   operator(): id  0 | task 0 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 208
 slot   operator(): id  0 | task 0 | cached n_tokens = 0, memory_seq_rm [0, end)
+slot init_sampler: id  0 | task 0 | init sampler, took 0.07 ms, tokens: text = 208, total = 208
 srv  stream_sessi: conv_id= (empty=1)
-slot init_sampler: id  0 | task 0 | init sampler, took 0.06 ms, tokens: text = 207, total = 207
-slot print_timing: id  0 | task 0 | prompt eval time =    8556.50 ms /   207 tokens (   41.34 ms per token,    24.19 tokens per second)
-slot print_timing: id  0 | task 0 |        eval time =    7204.03 ms /    79 tokens (   91.19 ms per token,    10.97 tokens per second)
-slot print_timing: id  0 | task 0 |       total time =   15760.53 ms /   286 tokens
-slot print_timing: id  0 | task 0 |    graphs reused =         77
-slot      release: id  0 | task 0 | stop processing: n_tokens = 285, truncated = 0
+slot print_timing: id  0 | task 0 | prompt eval time =    7965.55 ms /   208 tokens (   38.30 ms per token,    26.11 tokens per second)
+slot print_timing: id  0 | task 0 |        eval time =    7276.28 ms /    80 tokens (   90.95 ms per token,    10.99 tokens per second)
+slot print_timing: id  0 | task 0 |       total time =   15241.83 ms /   288 tokens
+slot print_timing: id  0 | task 0 |    graphs reused =         78
+slot      release: id  0 | task 0 | stop processing: n_tokens = 287, truncated = 0
 srv  update_slots: all slots are idle
-[GIN] 2026/08/05 - 18:39:54 | 200 |         2m39s |       127.0.0.1 | POST     "/api/chat"
+[GIN] 2026/08/06 - 06:48:55 | 200 |         2m30s |       127.0.0.1 | POST     "/api/chat"
+slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.239 (> 0.100 thold), f_keep = 0.178
+srv  get_availabl: updating prompt cache
+srv   prompt_save:  - saving prompt with length 287, total state size = 31.395 MiB (draft: 0.000 MiB)
+srv          load:  - looking for better prompt, base f_keep = 0.178, sim = 0.239
+srv        update:  - cache state: 1 prompts, 31.395 MiB (limits: 8192.000 MiB, 4096 tokens, 74888 est)
+srv        update:    - prompt 0x12edcc70:     287 tokens, checkpoints:  0,    31.395 MiB
+srv  get_availabl: prompt cache update took 18.56 ms
+slot launch_slot_: id  0 | task -1 | sampler chain: logits -> penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> ?min-p -> ?xtc -> temp-ext -> dist 
+slot launch_slot_: id  0 | task -1 | sampler params: 
+	repeat_last_n = 64, repeat_penalty = 1.100, frequency_penalty = 0.000, presence_penalty = 0.000
+	dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = 4096
+	top_k = 40, top_p = 0.900, min_p = 0.000, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.000
+	mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000, adaptive_target = -1.000, adaptive_decay = 0.900
+slot launch_slot_: id  0 | task 81 | processing task, is_child = 0
+slot   operator(): id  0 | task 81 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 213
+slot   operator(): id  0 | task 81 | cached n_tokens = 51, memory_seq_rm [51, end)
+srv  stream_sessi: conv_id= (empty=1)
+slot init_sampler: id  0 | task 81 | init sampler, took 0.07 ms, tokens: text = 213, total = 213
+slot print_timing: id  0 | task 81 | prompt eval time =    7113.64 ms /   162 tokens (   43.91 ms per token,    22.77 tokens per second)
+slot print_timing: id  0 | task 81 |        eval time =    9309.51 ms /    85 tokens (  109.52 ms per token,     9.13 tokens per second)
+slot print_timing: id  0 | task 81 |       total time =   16423.15 ms /   247 tokens
+slot print_timing: id  0 | task 81 |    graphs reused =        160
+slot      release: id  0 | task 81 | stop processing: n_tokens = 297, truncated = 0
+srv  update_slots: all slots are idle
+[GIN] 2026/08/06 - 06:49:15 | 200 | 16.780391958s |       127.0.0.1 | POST     "/api/chat"
+slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.246 (> 0.100 thold), f_keep = 0.172
+srv  get_availabl: updating prompt cache
+srv   prompt_save:  - saving prompt with length 297, total state size = 32.488 MiB (draft: 0.000 MiB)
+srv          load:  - looking for better prompt, base f_keep = 0.172, sim = 0.246
+srv        update:  - cache state: 2 prompts, 63.883 MiB (limits: 8192.000 MiB, 4096 tokens, 74888 est)
+srv        update:    - prompt 0x12edcc70:     287 tokens, checkpoints:  0,    31.395 MiB
+srv        update:    - prompt 0x12ed9860:     297 tokens, checkpoints:  0,    32.488 MiB
+srv  get_availabl: prompt cache update took 16.30 ms
+slot launch_slot_: id  0 | task -1 | sampler chain: logits -> penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> ?min-p -> ?xtc -> temp-ext -> dist 
+slot launch_slot_: id  0 | task -1 | sampler params: 
+	repeat_last_n = 64, repeat_penalty = 1.100, frequency_penalty = 0.000, presence_penalty = 0.000
+	dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = 4096
+	top_k = 40, top_p = 0.900, min_p = 0.000, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.000
+	mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000, adaptive_target = -1.000, adaptive_decay = 0.900
+slot launch_slot_: id  0 | task 167 | processing task, is_child = 0
+slot   operator(): id  0 | task 167 | new prompt, n_ctx_slot = 4096, n_keep = 4, task.n_tokens = 207
+slot   operator(): id  0 | task 167 | cached n_tokens = 51, memory_seq_rm [51, end)
+srv  stream_sessi: conv_id= (empty=1)
+slot init_sampler: id  0 | task 167 | init sampler, took 0.06 ms, tokens: text = 207, total = 207
+slot print_timing: id  0 | task 167 | prompt eval time =    6204.92 ms /   156 tokens (   39.78 ms per token,    25.14 tokens per second)
+slot print_timing: id  0 | task 167 |        eval time =    7068.69 ms /    79 tokens (   89.48 ms per token,    11.18 tokens per second)
+slot print_timing: id  0 | task 167 |       total time =   13273.61 ms /   235 tokens
+slot print_timing: id  0 | task 167 |    graphs reused =        236
+slot      release: id  0 | task 167 | stop processing: n_tokens = 285, truncated = 0
+srv  update_slots: all slots are idle
+[GIN] 2026/08/06 - 06:49:32 | 200 | 13.579859462s |       127.0.0.1 | POST     "/api/chat"
