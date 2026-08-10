@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vulnerability-remediation
+  namespace: default
+spec:
+  # Alle 30 Minuten scannen
+  schedule: "*/30 * * * *"
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: remediation-agent
+          containers:
+          - name: remediation-scanner
+            image: python:3.11-slim
+            workingDir: /workspace
+            env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-credentials
+                  key: token
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              echo "[CRONJOB] Starting vulnerability scan at $(date)"
+              
+              # Clone/update repo
+              if [ ! -d "/workspace/.git" ]; then
+                git clone https://${GITHUB_TOKEN}@github.com/js030/vuln-remediation-platform.git /workspace
+              else
+                cd /workspace
+                git fetch origin
+                git reset --hard origin/main
+              fi
+              
+              cd /workspace
+              
+              # Install dependencies
+              pip install -q langchain langchain-ollama pyyaml requests pandas > /dev/null 2>&1
+              
+              # Run the remediation pipeline
+              PYTHONPATH=. python scripts/mvp.py
+              
+              echo "[CRONJOB] Scan completed at $(date)"
+            volumeMounts:
+            - name: git-config
+              mountPath: /root/.git
+            - name: repo-cache
+              mountPath: /workspace
+          volumes:
+          - name: git-config
+            emptyDir: {}
+          - name: repo-cache
+            emptyDir: {}
+          restartPolicy: OnFailure
