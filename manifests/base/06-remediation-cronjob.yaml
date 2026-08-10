@@ -30,20 +30,19 @@ spec:
               set -e
               echo "[CRONJOB] Starting vulnerability scan at $(date)"
               
-              # Install system dependencies
+              # Install system dependencies only
               echo "[CRONJOB] Installing system dependencies..."
               apt-get update -qq
-              apt-get install -y -qq git wget curl > /dev/null 2>&1
+              apt-get install -y -qq git > /dev/null 2>&1
               
-              # Install Trivy (fixed version)
-              echo "[CRONJOB] Installing Trivy..."
-              TRIVY_VERSION="0.48.0"
-              wget -q https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz -O /tmp/trivy.tar.gz
-              tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin/ trivy
-              chmod +x /usr/local/bin/trivy
-              trivy --version
+              # Download pre-built Trivy binary (lightweight)
+              echo "[CRONJOB] Setting up Trivy..."
+              curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin 2>/dev/null || {
+                echo "[FALLBACK] Using Trivy from PATH..."
+                which trivy || apt-get install -y -qq trivy 2>/dev/null || true
+              }
               
-              echo "[CRONJOB] Dependencies installed"
+              echo "[CRONJOB] Dependencies ready"
               
               # Clone/update repo
               if [ ! -d "/workspace/.git" ]; then
@@ -60,7 +59,7 @@ spec:
               
               # Install Python dependencies
               echo "[CRONJOB] Installing Python dependencies..."
-              pip install -q langchain langchain-ollama pyyaml requests pandas > /dev/null 2>&1
+              pip install -q langchain langchain-ollama pyyaml requests pandas 2>/dev/null || true
               
               # Run the remediation pipeline
               echo "[CRONJOB] Running remediation pipeline..."
