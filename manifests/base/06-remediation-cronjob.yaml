@@ -33,14 +33,15 @@ spec:
               # Install system dependencies
               echo "[CRONJOB] Installing system dependencies..."
               apt-get update -qq
-              apt-get install -y -qq git wget > /dev/null 2>&1
+              apt-get install -y -qq git wget curl > /dev/null 2>&1
               
-              # Install Trivy
+              # Install Trivy from GitHub Release
               echo "[CRONJOB] Installing Trivy..."
-              wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | apt-key add -
-              echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | tee -a /etc/apt/sources.list.d/trivy.list > /dev/null
-              apt-get update -qq
-              apt-get install -y -qq trivy > /dev/null 2>&1
+              TRIVY_VERSION=$(curl -s https://api.github.com/repos/aquasecurity/trivy/releases/latest | grep tag_name | cut -d'"' -f4)
+              wget -q https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/trivy_${TRIVY_VERSION#v}_Linux-64bit.tar.gz -O /tmp/trivy.tar.gz
+              tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin/ trivy
+              rm /tmp/trivy.tar.gz
+              trivy --version
               
               echo "[CRONJOB] Dependencies installed"
               
