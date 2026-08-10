@@ -4,7 +4,7 @@ metadata:
   name: vulnerability-remediation
   namespace: default
 spec:
-  schedule: "*/30 * * * *"
+  schedule: "*/10 * * * *"
   jobTemplate:
     spec:
       backoffLimit: 1
@@ -35,12 +35,12 @@ spec:
               apt-get update -qq
               apt-get install -y -qq git wget curl > /dev/null 2>&1
               
-              # Install Trivy from GitHub Release
+              # Install Trivy (fixed version)
               echo "[CRONJOB] Installing Trivy..."
-              TRIVY_VERSION=$(curl -s https://api.github.com/repos/aquasecurity/trivy/releases/latest | grep tag_name | cut -d'"' -f4)
-              wget -q https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/trivy_${TRIVY_VERSION#v}_Linux-64bit.tar.gz -O /tmp/trivy.tar.gz
+              TRIVY_VERSION="0.48.0"
+              wget -q https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz -O /tmp/trivy.tar.gz
               tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin/ trivy
-              rm /tmp/trivy.tar.gz
+              chmod +x /usr/local/bin/trivy
               trivy --version
               
               echo "[CRONJOB] Dependencies installed"
