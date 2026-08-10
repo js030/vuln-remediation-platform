@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:12.0
+        image: postgres:9.6.0
 
 ---
 apiVersion: apps/v1
@@ -35,7 +35,7 @@ spec:
     spec:
       containers:
       - name: mysql
-        image: mysql:8.0.0
+        image: mysql:5.6.0
 
 ---
 apiVersion: apps/v1
@@ -55,7 +55,7 @@ spec:
     spec:
       containers:
       - name: app
-        image: node:12.0.0
+        image: node:14.0.0
 
 ---
 apiVersion: apps/v1
