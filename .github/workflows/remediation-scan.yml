@@ -2,8 +2,8 @@ name: Continuous Vulnerability Remediation
 
 on:
   schedule:
-    - cron: '*/10 * * * *'  # Every 10 minutes
-  workflow_dispatch:        # Manual trigger
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
 
 jobs:
   remediation:
@@ -16,12 +16,17 @@ jobs:
       with:
         python-version: '3.11'
     
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget curl
+    
     - name: Install Trivy
       run: |
-        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-        echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
-        sudo apt-get update
-        sudo apt-get install -y trivy
+        wget -q https://github.com/aquasecurity/trivy/releases/download/v0.46.0/trivy_0.46.0_Linux-64bit.tar.gz
+        tar xzf trivy_0.46.0_Linux-64bit.tar.gz
+        sudo mv trivy /usr/local/bin/
+        trivy --version
     
     - name: Install Python dependencies
       run: pip install langchain langchain-ollama pyyaml requests pandas
@@ -33,7 +38,7 @@ jobs:
     
     - name: Upload Metrics
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: pipeline-metrics-${{ github.run_id }}
         path: logs/pipeline_metrics.jsonl
