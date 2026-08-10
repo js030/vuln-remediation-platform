@@ -30,11 +30,19 @@ spec:
               set -e
               echo "[CRONJOB] Starting vulnerability scan at $(date)"
               
-              # Install git first!
+              # Install system dependencies
+              echo "[CRONJOB] Installing system dependencies..."
               apt-get update -qq
-              apt-get install -y -qq git > /dev/null 2>&1
+              apt-get install -y -qq git wget > /dev/null 2>&1
               
-              echo "[CRONJOB] Git installed"
+              # Install Trivy
+              echo "[CRONJOB] Installing Trivy..."
+              wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | apt-key add -
+              echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | tee -a /etc/apt/sources.list.d/trivy.list > /dev/null
+              apt-get update -qq
+              apt-get install -y -qq trivy > /dev/null 2>&1
+              
+              echo "[CRONJOB] Dependencies installed"
               
               # Clone/update repo
               if [ ! -d "/workspace/.git" ]; then
