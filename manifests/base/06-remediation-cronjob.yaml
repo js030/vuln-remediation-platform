@@ -4,7 +4,6 @@ metadata:
   name: vulnerability-remediation
   namespace: default
 spec:
-  # Alle 30 Minuten scannen
   schedule: "*/30 * * * *"
   jobTemplate:
     spec:
@@ -31,10 +30,18 @@ spec:
               set -e
               echo "[CRONJOB] Starting vulnerability scan at $(date)"
               
+              # Install git first!
+              apt-get update -qq
+              apt-get install -y -qq git > /dev/null 2>&1
+              
+              echo "[CRONJOB] Git installed"
+              
               # Clone/update repo
               if [ ! -d "/workspace/.git" ]; then
+                echo "[CRONJOB] Cloning repository..."
                 git clone https://${GITHUB_TOKEN}@github.com/js030/vuln-remediation-platform.git /workspace
               else
+                echo "[CRONJOB] Updating repository..."
                 cd /workspace
                 git fetch origin
                 git reset --hard origin/main
@@ -42,21 +49,19 @@ spec:
               
               cd /workspace
               
-              # Install dependencies
+              # Install Python dependencies
+              echo "[CRONJOB] Installing Python dependencies..."
               pip install -q langchain langchain-ollama pyyaml requests pandas > /dev/null 2>&1
               
               # Run the remediation pipeline
+              echo "[CRONJOB] Running remediation pipeline..."
               PYTHONPATH=. python scripts/mvp.py
               
               echo "[CRONJOB] Scan completed at $(date)"
             volumeMounts:
-            - name: git-config
-              mountPath: /root/.git
-            - name: repo-cache
+            - name: workspace
               mountPath: /workspace
           volumes:
-          - name: git-config
-            emptyDir: {}
-          - name: repo-cache
+          - name: workspace
             emptyDir: {}
           restartPolicy: OnFailure
