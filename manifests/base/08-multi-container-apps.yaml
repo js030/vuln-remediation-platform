@@ -38,7 +38,7 @@ spec:
     spec:
       initContainers:
       - name: setup
-        image: busybox:2.4.58
+        image: busybox:1.28.0
       containers:
       - name: main
         image: httpd:2.4.58
