@@ -15,12 +15,11 @@ spec:
     spec:
       containers:
       - name: app
-        image: nginx:1.14.0
+        image: nginx:1.24.0
       - name: sidecar-redis
         image: redis:5.0.9
       - name: sidecar-helper
         image: alpine:3.8
-
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -39,7 +38,7 @@ spec:
     spec:
       initContainers:
       - name: setup
-        image: busybox:1.28.0
+        image: busybox:2.4.58
       containers:
       - name: main
-        image: httpd:2.4.49
+        image: httpd:2.4.58
