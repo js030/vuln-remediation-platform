@@ -13,7 +13,7 @@ spec:
           serviceAccountName: remediation-agent
           containers:
           - name: remediation-scanner
-            image: aquasec/trivy:latest
+            image: python:3.11
             workingDir: /workspace
             env:
             - name: PYTHONUNBUFFERED
@@ -24,17 +24,27 @@ spec:
                   name: github-credentials
                   key: token
             command:
-            - /bin/sh
+            - /bin/bash
             - -c
             - |
               set -e
               echo "[CRONJOB] Starting vulnerability scan at $(date)"
               
-              # Install Python and dependencies
-              echo "[CRONJOB] Installing Python..."
-              apk add --no-cache python3 py3-pip git > /dev/null 2>&1
+              # Install all dependencies at once
+              echo "[CRONJOB] Installing dependencies..."
+              apt-get update -qq && apt-get install -y -qq git curl wget > /dev/null 2>&1
               
-              echo "[CRONJOB] Dependencies ready"
+              # Install Trivy binary directly
+              echo "[CRONJOB] Setting up Trivy..."
+              mkdir -p /tmp/trivy
+              cd /tmp/trivy
+              wget -q https://github.com/aquasecurity/trivy/releases/download/v0.46.0/trivy_0.46.0_Linux-64bit.tar.gz
+              tar xzf trivy_0.46.0_Linux-64bit.tar.gz
+              mv trivy /usr/local/bin/
+              cd /workspace
+              trivy --version
+              
+              echo "[CRONJOB] Dependencies installed"
               
               # Clone/update repo
               if [ ! -d "/workspace/.git" ]; then
@@ -51,11 +61,11 @@ spec:
               
               # Install Python dependencies
               echo "[CRONJOB] Installing Python packages..."
-              pip install --break-system-packages -q langchain langchain-ollama pyyaml requests pandas > /dev/null 2>&1
+              pip install -q langchain langchain-ollama pyyaml requests pandas
               
               # Run the remediation pipeline
               echo "[CRONJOB] Running remediation pipeline..."
-              PYTHONPATH=. python3 scripts/mvp.py
+              PYTHONPATH=. python scripts/mvp.py
               
               echo "[CRONJOB] Scan completed at $(date)"
             volumeMounts:
