@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multi-container-app
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: multi-container
+  template:
+    metadata:
+      labels:
+        app: multi-container
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.14.0
+      - name: sidecar-redis
+        image: redis:5.0.9
+      - name: sidecar-helper
+        image: alpine:3.8
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: init-containers-app
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: init-containers
+  template:
+    metadata:
+      labels:
+        app: init-containers
+    spec:
+      initContainers:
+      - name: setup
+        image: busybox:1.28.0
+      containers:
+      - name: main
+        image: httpd:2.4.49
