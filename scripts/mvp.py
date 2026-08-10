@@ -264,3 +264,55 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# Am Anfang der Datei (nach imports):
+import os
+from src.discovery.live_cluster_scanner import scan_all_live_workloads, compare_git_vs_live
+
+# In der main() Funktion (vor manifest_dir Loop):
+
+def main():
+    # ... bestehender Code ...
+    
+    manifest_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'manifests', 'base'))
+    yaml_files = glob.glob(os.path.join(manifest_dir, "*.yaml"))
+    
+    # NEU: Optional Live-Cluster-Scanning
+    SCAN_LIVE_CLUSTER = os.getenv("SCAN_LIVE_CLUSTER", "false").lower() == "true"
+    
+    if SCAN_LIVE_CLUSTER:
+        print("\n[CLUSTER-MODE] Scanning live cluster workloads...")
+        live_workloads = scan_all_live_workloads()
+        
+        # Drift-Detection
+        git_images = []
+        for filepath in yaml_files:
+            with open(filepath, 'r') as f:
+                for doc in yaml.safe_load_all(f):
+                    if doc and doc.get("kind") == "Deployment":
+                        containers = doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+                        for c in containers:
+                            git_images.append(c.get("image"))
+        
+        drift = compare_git_vs_live(git_images, live_workloads)
+        if drift["only_in_live"]:
+            print(f"\n[DRIFT] Images running in cluster but not in Git:")
+            for img in drift["only_in_live"]:
+                print(f"  - {img}")
+        
+        # Scan live workloads
+        for workload in live_workloads:
+            print(f"\n[DISCOVERY] {workload['type']}/{workload['name']} in {workload['namespace']}: {workload['image']}")
+            
+            try:
+                finding = scan_image(workload['image'])
+                if finding and finding.get("severity") in ["HIGH", "CRITICAL", "MEDIUM", "LOW"]:
+                    print(f"[DISCOVERY] Vulnerability found: {finding.get('severity')}")
+                    # ... rest der Logik wie normal ...
+            except Exception as e:
+                print(f"[ERROR] Scan failed: {e}")
+    
+    else:
+        # Originale Git-basierte Logik
+        print("[GIT-MODE] Scanning manifests from Git...")
+        # ... bestehender Code ...
