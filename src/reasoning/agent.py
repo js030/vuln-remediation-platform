@@ -1,54 +1,96 @@
 import re
 import yaml
+
 from langchain_ollama import ChatOllama
-from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import PromptTemplate
+
 
 llm = ChatOllama(model="llama3.2", temperature=0)
 
 manifest_prompt = PromptTemplate(
-    input_variables=["original_manifest", "fixed_version"],
-    template="""You are a strict configuration generator with no creative freedom.
-Your only task is to update the 'image' field in the provided Kubernetes manifest.
+    input_variables=[
+        "original_manifest",
+        "workload_kind",
+        "workload_name",
+        "container_type",
+        "container_name",
+        "original_image",
+        "target_image",
+    ],
+    template="""You are a strict Kubernetes configuration remediation agent.
+
+You must update exactly one container image in the Kubernetes YAML manifest.
+
+TARGET WORKLOAD:
+- Kind: {workload_kind}
+- Name: {workload_name}
+
+TARGET CONTAINER:
+- Container group: {container_type}
+- Container name: {container_name}
+- Current image: {original_image}
+- Required replacement image: {target_image}
 
 ORIGINAL MANIFEST:
 {original_manifest}
 
-STRUCTURAL REQUIREMENTS:
-1. Find the 'image:' key and replace its tag exactly with: {fixed_version}
-2. Do absolutely not change the deployment name, any other values, keys, indentation, or formatting.
-3. Do not add any explanations, markdown blocks, or comments.
-4. Return exclusively the raw YAML manifest.
-"""
+MANDATORY RULES:
+1. Update only the image field of the target container named "{container_name}".
+2. Replace "{original_image}" exactly with "{target_image}".
+3. Do not modify any other image fields, container names, metadata, replicas,
+   labels, selectors, ports, resources, or Kubernetes object structure.
+4. Preserve the workload kind and workload name.
+5. Return only raw YAML. Do not use Markdown fences or explanations.
+""",
 )
 
 chain = manifest_prompt | llm | StrOutputParser()
-def generate_manifest(finding: dict, fixed_version: str, original_manifest: str) -> dict:
-    result_yaml = chain.invoke({
-        "original_manifest": original_manifest,
-        "fixed_version": fixed_version
-    })
 
-    is_valid_yaml = False
+
+def generate_manifest(
+    finding: dict,
+    original_manifest: str,
+    workload_kind: str,
+    workload_name: str,
+    container_type: str,
+    container_name: str,
+    original_image: str,
+    target_image: str,
+) -> dict:
+    """Generate a proposed manifest update through the LLM."""
     try:
-        yaml.safe_load(result_yaml)
-        is_valid_yaml = True
-    except yaml.YAMLError:
-        pass
+        result_yaml = chain.invoke(
+            {
+                "original_manifest": original_manifest,
+                "workload_kind": workload_kind,
+                "workload_name": workload_name,
+                "container_type": container_type,
+                "container_name": container_name,
+                "original_image": original_image,
+                "target_image": target_image,
+            }
+        )
+    except Exception as error:
+        return {
+            "manifest": None,
+            "is_valid_yaml": False,
+            "version_updated": False,
+            "matches_target_image": False,
+            "error": str(error),
+        }
 
-    version_updated = False
-    matches_fixed_version = False
-    
-    match = re.search(r'image:\s*\S+:([a-zA-Z0-9\.\-]+)', result_yaml)
-    if match:
-        new_version = match.group(1)
-        if new_version == fixed_version:
-            version_updated = True
-            matches_fixed_version = True
+    try:
+        parsed = yaml.safe_load(result_yaml)
+        is_valid_yaml = parsed is not None
+    except yaml.YAMLError:
+        is_valid_yaml = False
+
+    matches_target_image = target_image in result_yaml
 
     return {
         "manifest": result_yaml,
         "is_valid_yaml": is_valid_yaml,
-        "version_updated": version_updated,
-        "matches_fixed_version": matches_fixed_version
+        "version_updated": matches_target_image,
+        "matches_target_image": matches_target_image,
     }

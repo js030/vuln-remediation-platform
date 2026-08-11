@@ -1,318 +1,703 @@
-import sys
+import glob
+import json
 import os
 import subprocess
-import glob
-import re
+import sys
 import time
-import json
+from datetime import datetime, timezone
+
 import yaml
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.discovery.trivy_collector import scan_image
 from src.reasoning.agent import generate_manifest
 
+
+SUPPORTED_WORKLOAD_KINDS = {"Deployment", "StatefulSet", "DaemonSet"}
+SUPPORTED_SEVERITIES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+
 DEMO_FALLBACK_MAP = {
     "nginx:1.14.0": "1.24.0",
     "redis:5.0.9": "7.0.14",
-    "httpd:2.4.49": "2.4.58"
+    "httpd:2.4.49": "2.4.58",
 }
 
 MAX_RETRIES = 2
-LOG_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'logs', 'pipeline_metrics.jsonl'))
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+LOG_FILE = os.path.join(PROJECT_ROOT, "logs", "pipeline_metrics.jsonl")
 
 
-def image_exists_in_registry(image_ref):
+def split_yaml_documents(content: str) -> list[str]:
+    """Split a multi-document YAML file while preserving individual documents."""
+    return content.split("\n---\n")
+
+
+def build_image_reference(original_image: str, fixed_version: str) -> str:
+    """
+    Replace only the image tag. Supports image repositories with registry ports.
+
+    Examples:
+      nginx:1.14.0                  -> nginx:<fixed>
+      registry.example:5000/app:1.0 -> registry.example:5000/app:<fixed>
+    """
+    image_without_digest = original_image.split("@", 1)[0]
+    last_slash = image_without_digest.rfind("/")
+    last_colon = image_without_digest.rfind(":")
+
+    if last_colon > last_slash:
+        repository = image_without_digest[:last_colon]
+    else:
+        repository = image_without_digest
+
+    return f"{repository}:{fixed_version}"
+
+
+def image_exists_in_registry(image_ref: str) -> bool:
+    """Verify that the selected target image exists in the registry."""
     try:
         result = subprocess.run(
             ["docker", "manifest", "inspect", image_ref],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
         )
         return result.returncode == 0
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
 
-def split_yaml_documents(content):
-    """Teilt eine Multi-Dokument-YAML-Datei anhand von '---' in einzelne
-    Text-Chunks auf, ohne die Formatierung der einzelnen Dokumente zu verändern."""
-    chunks = re.split(r'(?m)^---\s*$', content)
-    return chunks
+def get_workload_containers(document: dict) -> list[dict]:
+    """
+    Return all regular containers and init containers of supported workloads.
 
+    Each returned item contains enough metadata to validate the exact target
+    after LLM generation.
+    """
+    if not document or document.get("kind") not in SUPPORTED_WORKLOAD_KINDS:
+        return []
 
-def extract_image_and_name(yaml_content):
-    try:
-        doc = yaml.safe_load(yaml_content)
-        if doc and doc.get("kind") == "Deployment":
-            name = doc.get("metadata", {}).get("name", "unknown")
-            containers = doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
-            if containers:
-                return containers[0].get("image"), name
-    except Exception:
-        pass
-    return None, None
-
-
-def apply_targeted_image_fix(manifest_text, original_image, base_image_name, fixed_version):
-    """Ersetzt gezielt nur die Image-Zeile des ursprünglichen Images,
-    statt pauschal alle 'image:'-Vorkommen zu überschreiben."""
-    escaped_original = re.escape(original_image)
-    patched, count = re.subn(
-        rf'image:\s*{escaped_original}\b',
-        f'image: {base_image_name}:{fixed_version}',
-        manifest_text,
-        count=1
+    pod_spec = (
+        document.get("spec", {})
+        .get("template", {})
+        .get("spec", {})
     )
-    if count == 0:
-        return manifest_text, False
-    return patched, True
+
+    targets = []
+
+    for container_type, key in (
+        ("containers", "containers"),
+        ("initContainers", "initContainers"),
+    ):
+        for index, container in enumerate(pod_spec.get(key, []) or []):
+            image = container.get("image")
+            name = container.get("name")
+
+            if image and name:
+                targets.append(
+                    {
+                        "container_type": container_type,
+                        "container_key": key,
+                        "container_index": index,
+                        "container_name": name,
+                        "image": image,
+                    }
+                )
+
+    return targets
 
 
-def validate_final_manifest(manifest_text, expected_image=None):
-    """Letzte Validierungsschranke, bevor ein Manifest übernommen wird."""
+def get_container_image(
+    document: dict,
+    container_key: str,
+    container_name: str,
+) -> str | None:
+    """Find the image of one exact container by group and name."""
+    pod_spec = (
+        document.get("spec", {})
+        .get("template", {})
+        .get("spec", {})
+    )
+
+    for container in pod_spec.get(container_key, []) or []:
+        if container.get("name") == container_name:
+            return container.get("image")
+
+    return None
+
+
+def validate_manifest(
+    manifest_text: str,
+    workload_kind: str,
+    workload_name: str,
+    container_key: str,
+    container_name: str,
+    expected_image: str,
+) -> tuple[bool, str | None, float]:
+    """
+    Validate YAML, workload identity, and the exact target container image.
+    """
+    validation_started = time.perf_counter()
+
     try:
         parsed = yaml.safe_load(manifest_text)
-    except yaml.YAMLError as e:
-        return False, f"YAML-Syntaxfehler: {e}"
+    except yaml.YAMLError as error:
+        return False, f"yaml_syntax_error: {error}", time.perf_counter() - validation_started
 
-    if not parsed or parsed.get("kind") != "Deployment":
-        return False, "Kein valides Deployment-Objekt (kind fehlt oder falsch)"
+    if not parsed:
+        return False, "empty_yaml_document", time.perf_counter() - validation_started
 
-    if expected_image:
-        try:
-            actual_image = parsed["spec"]["template"]["spec"]["containers"][0]["image"]
-        except (KeyError, IndexError, TypeError):
-            return False, "Image-Feld nicht auffindbar"
+    if parsed.get("kind") != workload_kind:
+        return (
+            False,
+            f"unexpected_workload_kind: expected={workload_kind}, actual={parsed.get('kind')}",
+            time.perf_counter() - validation_started,
+        )
 
-        if actual_image != expected_image:
-            return False, f"Image-Feld inkorrekt: erwartet '{expected_image}', erhalten '{actual_image}'"
+    actual_name = parsed.get("metadata", {}).get("name")
+    if actual_name != workload_name:
+        return (
+            False,
+            f"unexpected_workload_name: expected={workload_name}, actual={actual_name}",
+            time.perf_counter() - validation_started,
+        )
 
-    return True, None
+    actual_image = get_container_image(parsed, container_key, container_name)
+
+    if actual_image is None:
+        return (
+            False,
+            f"target_container_not_found: {container_key}/{container_name}",
+            time.perf_counter() - validation_started,
+        )
+
+    if actual_image != expected_image:
+        return (
+            False,
+            f"target_image_mismatch: expected={expected_image}, actual={actual_image}",
+            time.perf_counter() - validation_started,
+        )
+
+    return True, None, time.perf_counter() - validation_started
 
 
-def generate_manifest_with_retry(finding, fixed_version, original_manifest, max_retries=MAX_RETRIES):
-    """Ruft den Agenten auf und wiederholt bei ungültigem Output bis zu max_retries mal."""
+def generate_manifest_with_retry(
+    finding: dict,
+    current_manifest: str,
+    workload_kind: str,
+    workload_name: str,
+    container_type: str,
+    container_name: str,
+    original_image: str,
+    target_image: str,
+) -> tuple[dict, int, float]:
+    """Generate a candidate manifest with a limited retry policy."""
     last_result = None
-    for attempt in range(1, max_retries + 2):
-        try:
-            result = generate_manifest(finding, fixed_version, original_manifest)
-        except Exception as e:
-            result = {
-                "manifest": None,
-                "is_valid_yaml": False,
-                "version_updated": False,
-                "matches_fixed_version": False,
-                "error": str(e),
-            }
+    total_llm_latency = 0.0
+
+    for attempt in range(1, MAX_RETRIES + 2):
+        llm_started = time.perf_counter()
+
+        result = generate_manifest(
+            finding=finding,
+            original_manifest=current_manifest,
+            workload_kind=workload_kind,
+            workload_name=workload_name,
+            container_type=container_type,
+            container_name=container_name,
+            original_image=original_image,
+            target_image=target_image,
+        )
+
+        total_llm_latency += time.perf_counter() - llm_started
         last_result = result
-        if result.get("is_valid_yaml") and result.get("version_updated"):
-            return result, attempt
-    return last_result, max_retries + 1
+
+        if result.get("manifest") and result.get("is_valid_yaml"):
+            return result, attempt, total_llm_latency
+
+    return last_result or {}, MAX_RETRIES + 1, total_llm_latency
 
 
-def log_run(deployment_name, original_image, fixed_version, finding, agent_result, latency, attempts, accepted, rejection_reason=None):
+def log_run(
+    *,
+    workload_kind: str,
+    workload_name: str,
+    namespace: str,
+    container_type: str,
+    container_name: str,
+    original_image: str,
+    target_image: str | None,
+    finding: dict | None,
+    trivy_latency_seconds: float,
+    llm_latency_seconds: float,
+    validation_latency_seconds: float,
+    end_to_end_latency_seconds: float,
+    attempts: int,
+    accepted: bool,
+    outcome: str,
+    rejection_reason: str | None = None,
+) -> None:
+    """Write structured English metrics for performance analysis."""
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
     entry = {
-        "timestamp": time.time(),
-        "deployment": deployment_name,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "workload_kind": workload_kind,
+        "workload_name": workload_name,
+        "namespace": namespace,
+        "container_type": container_type,
+        "container_name": container_name,
         "original_image": original_image,
-        "fixed_version": fixed_version,
+        "target_image": target_image,
+        "finding_id": finding.get("id") if finding else None,
         "severity": finding.get("severity") if finding else None,
-        "latency_seconds": round(latency, 2),
+        "trivy_scan_latency_seconds": round(trivy_latency_seconds, 3),
+        "llm_generation_latency_seconds": round(llm_latency_seconds, 3),
+        "validation_latency_seconds": round(validation_latency_seconds, 3),
+        "end_to_end_latency_seconds": round(end_to_end_latency_seconds, 3),
         "attempts": attempts,
-        "is_valid_yaml": agent_result.get("is_valid_yaml") if agent_result else None,
-        "version_updated": agent_result.get("version_updated") if agent_result else None,
-        "matches_fixed_version": agent_result.get("matches_fixed_version") if agent_result else None,
         "accepted": accepted,
+        "outcome": outcome,
         "rejection_reason": rejection_reason,
     }
-    with open(LOG_FILE, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+
+    with open(LOG_FILE, "a", encoding="utf-8") as log_file:
+        log_file.write(json.dumps(entry) + "\n")
 
 
-def process_document(chunk, filepath):
-    """Verarbeitet ein einzelnes YAML-Dokument (aus einer Multi-Dokument-Datei
-    oder einer Single-Dokument-Datei) und gibt (neuer_inhalt, wurde_geaendert) zurück."""
-    original_image, deployment_name = extract_image_and_name(chunk)
-    if not original_image:
-        return chunk, False
+def process_container(
+    current_manifest: str,
+    filepath: str,
+    workload_kind: str,
+    workload_name: str,
+    namespace: str,
+    target: dict,
+) -> tuple[str, bool]:
+    """Scan and remediate one exact container within one workload document."""
+    original_image = target["image"]
+    container_name = target["container_name"]
+    container_type = target["container_type"]
+    container_key = target["container_key"]
 
-    print(f"\n[DISCOVERY] Checking deployment '{deployment_name}' ({os.path.basename(filepath)}) with image '{original_image}'...")
+    run_started = time.perf_counter()
+
+    print(
+        f"\n[DISCOVERY] {workload_kind}/{workload_name} | "
+        f"{container_type}/{container_name} | image={original_image}"
+    )
+
+    trivy_started = time.perf_counter()
 
     try:
         finding = scan_image(original_image)
-    except Exception as e:
-        print(f"[ERROR] Trivy scan failed for {original_image}: {e}")
-        log_run(deployment_name, original_image, None, {}, None, 0.0, 0, accepted=False,
-                 rejection_reason=f"trivy_scan_failed: {e}")
-        return chunk, False
+    except Exception as error:
+        trivy_latency = time.perf_counter() - trivy_started
+        total_latency = time.perf_counter() - run_started
 
-    if not finding or finding.get("severity") not in ["HIGH", "CRITICAL", "MEDIUM", "LOW"]:
-        print(f"[SKIP] No relevant vulnerabilities found.")
-        return chunk, False
+        print(f"[ERROR] Trivy scan failed for {original_image}: {error}")
 
-    print(f"[DISCOVERY] Vulnerability found: {finding.get('severity', 'UNKNOWN')}")
+        log_run(
+            workload_kind=workload_kind,
+            workload_name=workload_name,
+            namespace=namespace,
+            container_type=container_type,
+            container_name=container_name,
+            original_image=original_image,
+            target_image=None,
+            finding=None,
+            trivy_latency_seconds=trivy_latency,
+            llm_latency_seconds=0.0,
+            validation_latency_seconds=0.0,
+            end_to_end_latency_seconds=total_latency,
+            attempts=0,
+            accepted=False,
+            outcome="scanner_failed",
+            rejection_reason=str(error),
+        )
+        return current_manifest, False
 
-    trivy_fixed = finding.get("fixed_version") or finding.get("FixedVersion")
-    fixed_version = None
-    base_image_name = original_image.split(":")[0]
+    trivy_latency = time.perf_counter() - trivy_started
 
-    if trivy_fixed and image_exists_in_registry(f"{base_image_name}:{trivy_fixed}"):
-        fixed_version = trivy_fixed
+    if not finding:
+        total_latency = time.perf_counter() - run_started
+        print(f"[SKIP] No vulnerabilities found for {original_image}.")
+
+        log_run(
+            workload_kind=workload_kind,
+            workload_name=workload_name,
+            namespace=namespace,
+            container_type=container_type,
+            container_name=container_name,
+            original_image=original_image,
+            target_image=None,
+            finding=None,
+            trivy_latency_seconds=trivy_latency,
+            llm_latency_seconds=0.0,
+            validation_latency_seconds=0.0,
+            end_to_end_latency_seconds=total_latency,
+            attempts=0,
+            accepted=False,
+            outcome="no_vulnerability",
+        )
+        return current_manifest, False
+
+    if finding.get("severity") not in SUPPORTED_SEVERITIES:
+        print(f"[SKIP] Unsupported severity: {finding.get('severity')}.")
+
+        return current_manifest, False
+
+    print(
+        f"[DISCOVERY] Finding={finding.get('id')} "
+        f"severity={finding.get('severity')}"
+    )
+
+    fixed_version = finding.get("fixed_version") or finding.get("FixedVersion")
 
     if not fixed_version and original_image in DEMO_FALLBACK_MAP:
         fixed_version = DEMO_FALLBACK_MAP[original_image]
 
     if not fixed_version:
-        print(f"[SKIP] No secure version found for {original_image}.")
-        return chunk, False
+        total_latency = time.perf_counter() - run_started
+        print(f"[SKIP] No secure version available for {original_image}.")
 
-    print(f"[AGENT] Generating patched manifest for {deployment_name}...")
+        log_run(
+            workload_kind=workload_kind,
+            workload_name=workload_name,
+            namespace=namespace,
+            container_type=container_type,
+            container_name=container_name,
+            original_image=original_image,
+            target_image=None,
+            finding=finding,
+            trivy_latency_seconds=trivy_latency,
+            llm_latency_seconds=0.0,
+            validation_latency_seconds=0.0,
+            end_to_end_latency_seconds=total_latency,
+            attempts=0,
+            accepted=False,
+            outcome="no_fix_available",
+            rejection_reason="scanner_did_not_provide_a_usable_fixed_version",
+        )
+        return current_manifest, False
 
-    start = time.time()
-    agent_result, attempts = generate_manifest_with_retry(finding, fixed_version, chunk)
-    latency = time.time() - start
+    target_image = build_image_reference(original_image, fixed_version)
 
-    if not agent_result or not agent_result.get("manifest"):
-        print(f"[REJECTED] {deployment_name}: LLM lieferte keinen verwertbaren Output.")
-        log_run(deployment_name, original_image, fixed_version, finding, agent_result or {},
-                 latency, attempts, accepted=False, rejection_reason="no_manifest_returned")
-        return chunk, False
+    if not image_exists_in_registry(target_image):
+        total_latency = time.perf_counter() - run_started
+        print(f"[SKIP] Target image does not exist in registry: {target_image}")
 
-    manifest_text = agent_result['manifest']
+        log_run(
+            workload_kind=workload_kind,
+            workload_name=workload_name,
+            namespace=namespace,
+            container_type=container_type,
+            container_name=container_name,
+            original_image=original_image,
+            target_image=target_image,
+            finding=finding,
+            trivy_latency_seconds=trivy_latency,
+            llm_latency_seconds=0.0,
+            validation_latency_seconds=0.0,
+            end_to_end_latency_seconds=total_latency,
+            attempts=0,
+            accepted=False,
+            outcome="target_image_unavailable",
+            rejection_reason="target_image_not_found_in_registry",
+        )
+        return current_manifest, False
 
-    manifest_text, replaced = apply_targeted_image_fix(
-        manifest_text, original_image, base_image_name, fixed_version
+    print(
+        f"[AGENT] Generating remediation for {container_type}/"
+        f"{container_name}: {original_image} -> {target_image}"
     )
 
-    expected_image = f"{base_image_name}:{fixed_version}"
-    final_valid, rejection_reason = validate_final_manifest(manifest_text, expected_image=expected_image)
+    agent_result, attempts, llm_latency = generate_manifest_with_retry(
+        finding=finding,
+        current_manifest=current_manifest,
+        workload_kind=workload_kind,
+        workload_name=workload_name,
+        container_type=container_type,
+        container_name=container_name,
+        original_image=original_image,
+        target_image=target_image,
+    )
 
-    if not final_valid:
-        print(f"[REJECTED] {deployment_name}: wird NICHT übernommen ({rejection_reason}).")
-        log_run(deployment_name, original_image, fixed_version, finding, agent_result,
-                 latency, attempts, accepted=False, rejection_reason=rejection_reason)
-        return chunk, False
+    manifest_text = agent_result.get("manifest")
 
-    print(f"[SAVED] {deployment_name} in {os.path.basename(filepath)} updated. (Versuche: {attempts}, Latenz: {latency:.2f}s)")
-    log_run(deployment_name, original_image, fixed_version, finding, agent_result,
-             latency, attempts, accepted=True)
+    if not manifest_text:
+        total_latency = time.perf_counter() - run_started
+        print(f"[REJECTED] No usable LLM output for {container_name}.")
+
+        log_run(
+            workload_kind=workload_kind,
+            workload_name=workload_name,
+            namespace=namespace,
+            container_type=container_type,
+            container_name=container_name,
+            original_image=original_image,
+            target_image=target_image,
+            finding=finding,
+            trivy_latency_seconds=trivy_latency,
+            llm_latency_seconds=llm_latency,
+            validation_latency_seconds=0.0,
+            end_to_end_latency_seconds=total_latency,
+            attempts=attempts,
+            accepted=False,
+            outcome="rejected",
+            rejection_reason="no_manifest_returned",
+        )
+        return current_manifest, False
+
+    valid, reason, validation_latency = validate_manifest(
+        manifest_text=manifest_text,
+        workload_kind=workload_kind,
+        workload_name=workload_name,
+        container_key=container_key,
+        container_name=container_name,
+        expected_image=target_image,
+    )
+
+    total_latency = time.perf_counter() - run_started
+
+    if not valid:
+        print(f"[REJECTED] {container_name}: {reason}")
+
+        log_run(
+            workload_kind=workload_kind,
+            workload_name=workload_name,
+            namespace=namespace,
+            container_type=container_type,
+            container_name=container_name,
+            original_image=original_image,
+            target_image=target_image,
+            finding=finding,
+            trivy_latency_seconds=trivy_latency,
+            llm_latency_seconds=llm_latency,
+            validation_latency_seconds=validation_latency,
+            end_to_end_latency_seconds=total_latency,
+            attempts=attempts,
+            accepted=False,
+            outcome="rejected",
+            rejection_reason=reason,
+        )
+        return current_manifest, False
+
+    print(
+        f"[SAVED] {workload_kind}/{workload_name} | "
+        f"{container_type}/{container_name} | "
+        f"attempts={attempts} | total_latency={total_latency:.2f}s"
+    )
+
+    log_run(
+        workload_kind=workload_kind,
+        workload_name=workload_name,
+        namespace=namespace,
+        container_type=container_type,
+        container_name=container_name,
+        original_image=original_image,
+        target_image=target_image,
+        finding=finding,
+        trivy_latency_seconds=trivy_latency,
+        llm_latency_seconds=llm_latency,
+        validation_latency_seconds=validation_latency,
+        end_to_end_latency_seconds=total_latency,
+        attempts=attempts,
+        accepted=True,
+        outcome="remediated",
+    )
 
     return manifest_text, True
 
 
-def main():
-    manifest_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'manifests', 'base'))
-    yaml_files = glob.glob(os.path.join(manifest_dir, "*.yaml"))
+def process_document(chunk: str, filepath: str) -> tuple[str, bool]:
+    """Process every supported container inside one YAML workload document."""
+    try:
+        document = yaml.safe_load(chunk)
+    except yaml.YAMLError as error:
+        print(f"[SKIP] Invalid YAML in {os.path.basename(filepath)}: {error}")
+        return chunk, False
 
-    updates_made = []
+    if not document or document.get("kind") not in SUPPORTED_WORKLOAD_KINDS:
+        return chunk, False
 
-    print("[START] Checking all manifests in directory...")
+    workload_kind = document.get("kind")
+    workload_name = document.get("metadata", {}).get("name", "unknown")
+    namespace = document.get("metadata", {}).get("namespace", "default")
 
-    for filepath in yaml_files:
-        with open(filepath, 'r') as f:
-            full_content = f.read()
+    changed = False
+    current_manifest = chunk
 
-        doc_chunks = split_yaml_documents(full_content)
-        new_chunks = []
-        file_changed = False
+    # Re-parse before each container, because the previous accepted LLM output
+    # becomes the input for the next target container.
+    initial_targets = get_workload_containers(document)
 
-        for chunk in doc_chunks:
-            if not chunk.strip():
-                new_chunks.append(chunk)
-                continue
+    if not initial_targets:
+        return chunk, False
 
-            new_content, changed = process_document(chunk, filepath)
-            new_chunks.append(new_content)
-            if changed:
-                file_changed = True
+    for initial_target in initial_targets:
+        try:
+            current_document = yaml.safe_load(current_manifest)
+        except yaml.YAMLError:
+            break
 
-        if file_changed:
-            with open(filepath, "w") as f:
-                f.write("\n---\n".join(c.strip("\n") for c in new_chunks))
-            updates_made.append(filepath)
+        current_image = get_container_image(
+            current_document,
+            initial_target["container_key"],
+            initial_target["container_name"],
+        )
 
-    if not updates_made:
-        print("\n[DONE] No updates necessary or all candidates rejected. Exiting.")
-        sys.exit(0)
+        if not current_image:
+            continue
 
-    print("\n[GIT] Creating bundled Pull Request...")
+        target = dict(initial_target)
+        target["image"] = current_image
+
+        current_manifest, container_changed = process_container(
+            current_manifest=current_manifest,
+            filepath=filepath,
+            workload_kind=workload_kind,
+            workload_name=workload_name,
+            namespace=namespace,
+            target=target,
+        )
+
+        changed = changed or container_changed
+
+    return current_manifest, changed
+
+
+def create_or_update_pull_request(updates_made: list[str]) -> None:
+    """Push the remediation branch and create or reuse one open PR."""
     branch_name = "remediation/bulk-update"
+
+    print("\n[GIT] Creating or updating remediation Pull Request...")
 
     try:
         subprocess.run(["git", "checkout", "main"], check=True)
-        subprocess.run(["git", "branch", "-D", branch_name], stderr=subprocess.DEVNULL)
+
+        subprocess.run(
+            ["git", "branch", "-D", branch_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
         subprocess.run(["git", "checkout", "-b", branch_name], check=True)
 
-        for file in updates_made:
-            subprocess.run(["git", "add", file], check=True)
+        for filepath in updates_made:
+            subprocess.run(["git", "add", filepath], check=True)
 
-        subprocess.run(["git", "commit", "-m", "security: automated bulk remediation of vulnerable deployments"], check=True)
-        subprocess.run(["git", "push", "origin", branch_name, "--force"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "commit",
+                "-m",
+                "security: automated remediation of vulnerable container images",
+            ],
+            check=True,
+        )
 
-        subprocess.run([
-            "gh", "pr", "create",
-            "--title", "Security Patch: Bulk update of vulnerable deployments",
-            "--body", "Automated vulnerability remediation by AI Agent across multiple deployments.",
-            "--base", "main"
-        ], check=True)
+        subprocess.run(
+            ["git", "push", "origin", branch_name, "--force"],
+            check=True,
+        )
 
-        print("[DONE] Pull Request created!")
-    except subprocess.CalledProcessError as e:
-        print(f"[ERROR] Git operation failed: {e}")
+        existing_pr = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--head",
+                branch_name,
+                "--base",
+                "main",
+                "--state",
+                "open",
+                "--json",
+                "url",
+                "--jq",
+                ".[0].url // empty",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        existing_url = existing_pr.stdout.strip()
+
+        if existing_url:
+            print(f"[DONE] Existing remediation PR updated: {existing_url}")
+            return
+
+        created_pr = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "create",
+                "--title",
+                "Security Patch: Container Image Remediation",
+                "--body",
+                (
+                    "Automated remediation proposal generated by the "
+                    "vulnerability remediation agent.\n\n"
+                    "Please review all image-version updates before merging."
+                ),
+                "--base",
+                "main",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        print(f"[DONE] Pull Request created: {created_pr.stdout.strip()}")
+
+    except subprocess.CalledProcessError as error:
+        print(f"[ERROR] Git or Pull Request operation failed: {error}")
+
+
+def main() -> None:
+    manifest_dir = os.path.join(PROJECT_ROOT, "manifests", "base")
+    yaml_files = sorted(glob.glob(os.path.join(manifest_dir, "*.yaml")))
+
+    updates_made = []
+
+    print("[START] Scanning Kubernetes workload manifests...")
+    print(
+        "[INFO] Supported workload kinds: "
+        + ", ".join(sorted(SUPPORTED_WORKLOAD_KINDS))
+    )
+
+    for filepath in yaml_files:
+        with open(filepath, "r", encoding="utf-8") as manifest_file:
+            full_content = manifest_file.read()
+
+        chunks = split_yaml_documents(full_content)
+        updated_chunks = []
+        file_changed = False
+
+        for chunk in chunks:
+            if not chunk.strip():
+                updated_chunks.append(chunk)
+                continue
+
+            updated_chunk, changed = process_document(chunk, filepath)
+            updated_chunks.append(updated_chunk)
+            file_changed = file_changed or changed
+
+        if file_changed:
+            with open(filepath, "w", encoding="utf-8") as manifest_file:
+                manifest_file.write("\n---\n".join(item.strip("\n") for item in updated_chunks))
+                manifest_file.write("\n")
+
+            updates_made.append(filepath)
+
+    if not updates_made:
+        print("\n[DONE] No patchable findings found. No Pull Request created.")
+        return
+
+    create_or_update_pull_request(updates_made)
 
 
 if __name__ == "__main__":
     main()
-
-# Am Anfang der Datei (nach imports):
-import os
-from src.discovery.live_cluster_scanner import scan_all_live_workloads, compare_git_vs_live
-
-# In der main() Funktion (vor manifest_dir Loop):
-
-def main():
-    # ... bestehender Code ...
-    
-    manifest_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'manifests', 'base'))
-    yaml_files = glob.glob(os.path.join(manifest_dir, "*.yaml"))
-    
-    # NEU: Optional Live-Cluster-Scanning
-    SCAN_LIVE_CLUSTER = os.getenv("SCAN_LIVE_CLUSTER", "false").lower() == "true"
-    
-    if SCAN_LIVE_CLUSTER:
-        print("\n[CLUSTER-MODE] Scanning live cluster workloads...")
-        live_workloads = scan_all_live_workloads()
-        
-        # Drift-Detection
-        git_images = []
-        for filepath in yaml_files:
-            with open(filepath, 'r') as f:
-                for doc in yaml.safe_load_all(f):
-                    if doc and doc.get("kind") == "Deployment":
-                        containers = doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
-                        for c in containers:
-                            git_images.append(c.get("image"))
-        
-        drift = compare_git_vs_live(git_images, live_workloads)
-        if drift["only_in_live"]:
-            print(f"\n[DRIFT] Images running in cluster but not in Git:")
-            for img in drift["only_in_live"]:
-                print(f"  - {img}")
-        
-        # Scan live workloads
-        for workload in live_workloads:
-            print(f"\n[DISCOVERY] {workload['type']}/{workload['name']} in {workload['namespace']}: {workload['image']}")
-            
-            try:
-                finding = scan_image(workload['image'])
-                if finding and finding.get("severity") in ["HIGH", "CRITICAL", "MEDIUM", "LOW"]:
-                    print(f"[DISCOVERY] Vulnerability found: {finding.get('severity')}")
-                    # ... rest der Logik wie normal ...
-            except Exception as e:
-                print(f"[ERROR] Scan failed: {e}")
-    
-    else:
-        # Originale Git-basierte Logik
-        print("[GIT-MODE] Scanning manifests from Git...")
-        # ... bestehender Code ...

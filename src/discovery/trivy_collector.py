@@ -1,97 +1,125 @@
-import subprocess
 import json
+import subprocess
 
-def scan_image(image_name: str) -> dict:
+
+SEVERITY_WEIGHTS = {
+    "UNKNOWN": 0,
+    "LOW": 1,
+    "MEDIUM": 2,
+    "HIGH": 3,
+    "CRITICAL": 4,
+}
+
+
+def scan_image(image_name: str) -> dict | None:
+    """
+    Scan one container image and return the highest-severity CVE finding.
+
+    Returns None when Trivy successfully scans the image but finds no CVEs.
+    Raises RuntimeError when Trivy cannot scan the image at all.
+    """
     result = subprocess.run(
-        ["trivy", "image", "--format", "json", "--scanners", "vuln,misconfig", image_name],
-        capture_output=True, text=True
+        [
+            "trivy",
+            "image",
+            "--format", "json",
+            "--scanners", "vuln",
+            "--skip-version-check",
+            image_name,
+        ],
+        capture_output=True,
+        text=True,
     )
 
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Trivy scan failed for '{image_name}': {result.stderr.strip()}"
+        )
+
     if not result.stdout.strip():
-        raise RuntimeError(f"Trivy returned empty output for '{image_name}'. Stderr: {result.stderr.strip()}")
+        raise RuntimeError(f"Trivy returned empty output for '{image_name}'.")
 
     raw_data = json.loads(result.stdout)
-    results = raw_data.get("Results", [])
-
     vulnerabilities = []
-    misconfigurations = []
-    
-    for res in results:
-        vulnerabilities.extend(res.get("Vulnerabilities", []))
-        misconfigurations.extend(res.get("Misconfigurations", []))
 
-    if misconfigurations:
-        finding = misconfigurations[0]
-        return {
-            "id": finding.get("ID"),
-            "type": "misconfig",
-            "severity": finding.get("Severity", "UNKNOWN"),
-            "title": finding.get("Title", finding.get("ID")),
-            "affected_asset": image_name,
-            "fixed_version": None,
-            "raw_source": finding
-        }
-    elif vulnerabilities:
-        finding = vulnerabilities[0]
-        return {
-            "id": finding.get("VulnerabilityID"),
-            "type": "cve",
-            "severity": finding.get("Severity", "UNKNOWN"),
-            "title": finding.get("Title", finding.get("VulnerabilityID")),
-            "affected_asset": image_name,
-            "fixed_version": finding.get("FixedVersion"),
-            "raw_source": finding
-        }
-    else:
-        raise RuntimeError("No vulnerabilities or misconfigurations found.")
+    for result_item in raw_data.get("Results", []):
+        vulnerabilities.extend(result_item.get("Vulnerabilities", []))
 
-def scan_image_all_findings(image_name: str, max_findings: int = 3, min_severity: str = "HIGH") -> list:
-    result = subprocess.run(
-        ["trivy", "image", "--format", "json", "--scanners", "vuln,misconfig", image_name],
-        capture_output=True, text=True
+    if not vulnerabilities:
+        return None
+
+    vulnerabilities.sort(
+        key=lambda finding: SEVERITY_WEIGHTS.get(
+            finding.get("Severity", "UNKNOWN"), 0
+        ),
+        reverse=True,
     )
 
-    if not result.stdout.strip():
+    finding = vulnerabilities[0]
+
+    return {
+        "id": finding.get("VulnerabilityID"),
+        "type": "cve",
+        "severity": finding.get("Severity", "UNKNOWN"),
+        "title": finding.get("Title", finding.get("VulnerabilityID")),
+        "affected_asset": image_name,
+        "fixed_version": finding.get("FixedVersion"),
+        "raw_source": finding,
+    }
+
+
+def scan_image_all_findings(
+    image_name: str,
+    max_findings: int = 3,
+    min_severity: str = "HIGH",
+) -> list:
+    """Return multiple CVE findings sorted by severity."""
+    result = subprocess.run(
+        [
+            "trivy",
+            "image",
+            "--format", "json",
+            "--scanners", "vuln",
+            "--skip-version-check",
+            image_name,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0 or not result.stdout.strip():
         return []
 
     raw_data = json.loads(result.stdout)
-    results = raw_data.get("Results", [])
+    findings = []
 
-    all_findings = []
-    for res in results:
-     
-        for vuln in res.get("Vulnerabilities", []):
-            all_findings.append({
-                "id": vuln.get("VulnerabilityID"),
-                "type": "cve",
-                "severity": vuln.get("Severity", "UNKNOWN"),
-                "title": vuln.get("Title", vuln.get("VulnerabilityID")),
-                "affected_asset": image_name,
-                "fixed_version": vuln.get("FixedVersion"),
-                "raw_source": vuln
-            })
+    for result_item in raw_data.get("Results", []):
+        for vulnerability in result_item.get("Vulnerabilities", []):
+            findings.append(
+                {
+                    "id": vulnerability.get("VulnerabilityID"),
+                    "type": "cve",
+                    "severity": vulnerability.get("Severity", "UNKNOWN"),
+                    "title": vulnerability.get(
+                        "Title", vulnerability.get("VulnerabilityID")
+                    ),
+                    "affected_asset": image_name,
+                    "fixed_version": vulnerability.get("FixedVersion"),
+                    "raw_source": vulnerability,
+                }
+            )
 
-        for misconfig in res.get("Misconfigurations", []):
-            all_findings.append({
-                "id": misconfig.get("ID"),
-                "type": "misconfig",
-                "severity": misconfig.get("Severity", "UNKNOWN"),
-                "title": misconfig.get("Title", misconfig.get("ID")),
-                "affected_asset": image_name,
-                "fixed_version": None,
-                "raw_source": misconfig
-            })
+    minimum_weight = SEVERITY_WEIGHTS.get(min_severity, 0)
 
-
-    severity_weights = {"UNKNOWN": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
-    min_sev_weight = severity_weights.get(min_severity, 0)
-    
-    filtered_findings = [
-        f for f in all_findings 
-        if severity_weights.get(f.get("severity", "UNKNOWN"), 0) >= min_sev_weight
+    findings = [
+        finding
+        for finding in findings
+        if SEVERITY_WEIGHTS.get(finding["severity"], 0) >= minimum_weight
     ]
-    
-   
-    filtered_findings.sort(key=lambda x: severity_weights.get(x.get("severity", "UNKNOWN"), 0), reverse=True)
-    
-    return filtered_findings[:max_findings]
+
+    findings.sort(
+        key=lambda finding: SEVERITY_WEIGHTS.get(finding["severity"], 0),
+        reverse=True,
+    )
+
+    return findings[:max_findings]
