@@ -1,0 +1,47 @@
+version: 1
+
+# Zentrale Team-Policy:
+# Der Agent darf nur auf diese vom Team freigegebenen Zielimages aktualisieren.
+#
+# Beispiel:
+# nginx:1.14.0, nginx:1.16.1 oder nginx:1.20.2
+# werden alle gegen die Baseline nginx:1.24.0 geprüft.
+#
+# Wenn das Team später ein neues Image freigibt, wird NUR diese Datei geändert.
+
+images:
+  nginx:
+    approved_image: "nginx:1.24.0"
+    owner: "platform-team"
+
+    # false = Ein Update darf erfolgen, wenn mindestens relevante CVEs
+    # behoben werden. Noch bestehende CVEs werden im PR dokumentiert.
+    require_all_high_critical_resolved: false
+
+    # Das Zielimage darf im Vergleich zum Original keine neuen
+    # CRITICAL-CVEs einführen.
+    require_no_new_critical_cves: true
+
+  redis:
+    approved_image: "redis:7.0.14"
+    owner: "platform-team"
+    require_all_high_critical_resolved: false
+    require_no_new_critical_cves: true
+
+  httpd:
+    approved_image: "httpd:2.4.58"
+    owner: "platform-team"
+    require_all_high_critical_resolved: false
+    require_no_new_critical_cves: true
+
+  mongo:
+    approved_image: "mongo:4.4.29"
+    owner: "platform-team"
+    require_all_high_critical_resolved: false
+    require_no_new_critical_cves: true
+
+  prom/node-exporter:
+    approved_image: "prom/node-exporter:v1.8.2"
+    owner: "platform-team"
+    require_all_high_critical_resolved: false
+    require_no_new_critical_cves: true

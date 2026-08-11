@@ -1,3 +1,4 @@
+import copy
 import glob
 import json
 import os
@@ -9,29 +10,55 @@ from datetime import datetime, timezone
 
 import yaml
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(
+    0,
+    os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    ),
+)
 
 from src.discovery.trivy_collector import scan_image
-from src.reasoning.agent import generate_manifest
+from src.policy.image_policy import (
+    load_image_policy,
+    select_approved_target,
+)
+from src.reasoning.agent import generate_pr_description
 
 
-SUPPORTED_WORKLOAD_KINDS = {"Deployment", "StatefulSet", "DaemonSet"}
-SUPPORTED_SEVERITIES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
-
-
-APPROVED_IMAGE_REMEDIATION_MAP = {
-  
-    "nginx:1.14.0": "nginx:1.24.0",
-    "redis:5.0.9": "redis:7.0.14",
-    "httpd:2.4.49": "httpd:2.4.58",
-    "mongo:3.6.0": "mongo:4.4.29",
-    "prom/node-exporter:v1.0.1": "prom/node-exporter:v1.8.2",
+SUPPORTED_WORKLOAD_KINDS = {
+    "Deployment",
+    "StatefulSet",
+    "DaemonSet",
 }
 
-MAX_RETRIES = 2
+RELEVANT_SEVERITIES = {
+    "HIGH",
+    "CRITICAL",
+}
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-LOG_FILE = os.path.join(PROJECT_ROOT, "logs", "pipeline_metrics.jsonl")
+PROJECT_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..")
+)
+
+MANIFEST_DIRECTORY = os.path.join(
+    PROJECT_ROOT,
+    "manifests",
+    "base",
+)
+
+POLICY_FILE = os.path.join(
+    PROJECT_ROOT,
+    "policies",
+    "approved-images.yaml",
+)
+
+LOG_FILE = os.path.join(
+    PROJECT_ROOT,
+    "logs",
+    "pipeline_metrics.jsonl",
+)
+
+BRANCH_NAME = "remediation/team-approved-image-baselines"
 
 
 def split_yaml_documents(content: str) -> list[str]:
@@ -40,62 +67,50 @@ def split_yaml_documents(content: str) -> list[str]:
 
 
 def image_exists_in_registry(image_ref: str) -> bool:
-    """Check whether a target image exists in the container registry."""
+    """Check whether a target image exists in its registry."""
     try:
         result = subprocess.run(
             ["docker", "manifest", "inspect", image_ref],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=30,
+            timeout=60,
+            check=False,
         )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
 
-def select_target_image(original_image: str) -> tuple[str | None, str]:
-    """
-    Select an approved replacement image.
-
-    The target is determined by an approved image policy, not directly from
-    Trivy FixedVersion, because a Trivy fixed version often refers to an
-    operating-system package version inside an image.
-    """
-    target_image = APPROVED_IMAGE_REMEDIATION_MAP.get(original_image)
-
-    if target_image:
-        return target_image, "approved_image_policy"
-
-    return None, "no_approved_image_target"
-
-
-def get_workload_containers(document: dict) -> list[dict]:
-    """
-    Return all regular containers and init containers in a supported workload.
-    """
-    if not document or document.get("kind") not in SUPPORTED_WORKLOAD_KINDS:
-        return []
-
-    pod_spec = (
+def get_pod_spec(document: dict) -> dict:
+    """Return the pod specification of a Kubernetes workload."""
+    return (
         document.get("spec", {})
         .get("template", {})
         .get("spec", {})
     )
 
+
+def get_workload_containers(document: dict) -> list[dict]:
+    """Return regular containers and init containers of supported workloads."""
+    if not document:
+        return []
+
+    if document.get("kind") not in SUPPORTED_WORKLOAD_KINDS:
+        return []
+
+    pod_spec = get_pod_spec(document)
     targets = []
 
-    for container_type, container_key in (
-        ("containers", "containers"),
-        ("initContainers", "initContainers"),
-    ):
-        for index, container in enumerate(pod_spec.get(container_key, []) or []):
-            image = container.get("image")
+    for container_key in ("containers", "initContainers"):
+        for index, container in enumerate(
+            pod_spec.get(container_key, []) or []
+        ):
             name = container.get("name")
+            image = container.get("image")
 
-            if image and name:
+            if name and image:
                 targets.append(
                     {
-                        "container_type": container_type,
                         "container_key": container_key,
                         "container_index": index,
                         "container_name": name,
@@ -111,12 +126,8 @@ def get_container_image(
     container_key: str,
     container_name: str,
 ) -> str | None:
-    """Return the image of one exact container identified by name."""
-    pod_spec = (
-        document.get("spec", {})
-        .get("template", {})
-        .get("spec", {})
-    )
+    """Return the image field of one exact named container."""
+    pod_spec = get_pod_spec(document)
 
     for container in pod_spec.get(container_key, []) or []:
         if container.get("name") == container_name:
@@ -125,449 +136,416 @@ def get_container_image(
     return None
 
 
-def validate_manifest(
-    manifest_text: str,
-    workload_kind: str,
-    workload_name: str,
+def update_container_image(
+    document: dict,
     container_key: str,
     container_name: str,
-    expected_image: str,
-) -> tuple[bool, str | None, float]:
-    """
-    Validate generated YAML and verify the exact target container image.
-    """
-    validation_started = time.perf_counter()
-
-    try:
-        parsed = yaml.safe_load(manifest_text)
-    except yaml.YAMLError as error:
-        return (
-            False,
-            f"yaml_syntax_error: {error}",
-            time.perf_counter() - validation_started,
-        )
-
-    if not parsed:
-        return (
-            False,
-            "empty_yaml_document",
-            time.perf_counter() - validation_started,
-        )
-
-    if parsed.get("kind") != workload_kind:
-        return (
-            False,
-            f"unexpected_workload_kind: expected={workload_kind}, "
-            f"actual={parsed.get('kind')}",
-            time.perf_counter() - validation_started,
-        )
-
-    actual_workload_name = parsed.get("metadata", {}).get("name")
-
-    if actual_workload_name != workload_name:
-        return (
-            False,
-            f"unexpected_workload_name: expected={workload_name}, "
-            f"actual={actual_workload_name}",
-            time.perf_counter() - validation_started,
-        )
-
-    actual_image = get_container_image(
-        parsed,
-        container_key,
-        container_name,
-    )
-
-    if actual_image is None:
-        return (
-            False,
-            f"target_container_not_found: {container_key}/{container_name}",
-            time.perf_counter() - validation_started,
-        )
-
-    if actual_image != expected_image:
-        return (
-            False,
-            f"target_image_mismatch: expected={expected_image}, "
-            f"actual={actual_image}",
-            time.perf_counter() - validation_started,
-        )
-
-    return True, None, time.perf_counter() - validation_started
-
-
-def generate_manifest_with_retry(
-    finding: dict,
-    current_manifest: str,
-    workload_kind: str,
-    workload_name: str,
-    container_type: str,
-    container_name: str,
-    original_image: str,
     target_image: str,
-) -> tuple[dict, int, float]:
-    """Generate a manifest proposal with limited retry handling."""
-    last_result = None
-    total_llm_latency = 0.0
+) -> bool:
+    """
+    Deterministically update exactly one image field.
 
-    for attempt in range(1, MAX_RETRIES + 2):
-        generation_started = time.perf_counter()
+    No LLM is used for this operation, so the YAML update is predictable.
+    """
+    pod_spec = get_pod_spec(document)
 
-        result = generate_manifest(
-            finding=finding,
-            original_manifest=current_manifest,
-            workload_kind=workload_kind,
-            workload_name=workload_name,
-            container_type=container_type,
-            container_name=container_name,
-            original_image=original_image,
-            target_image=target_image,
-        )
+    for container in pod_spec.get(container_key, []) or []:
+        if container.get("name") == container_name:
+            container["image"] = target_image
+            return True
 
-        total_llm_latency += time.perf_counter() - generation_started
-        last_result = result
-
-        if result.get("manifest") and result.get("is_valid_yaml"):
-            return result, attempt, total_llm_latency
-
-    return last_result or {}, MAX_RETRIES + 1, total_llm_latency
+    return False
 
 
-def log_run(
-    *,
-    workload_kind: str,
-    workload_name: str,
-    namespace: str,
-    container_type: str,
-    container_name: str,
-    original_image: str,
-    target_image: str | None,
-    finding: dict | None,
-    trivy_latency_seconds: float,
-    llm_latency_seconds: float,
-    validation_latency_seconds: float,
-    end_to_end_latency_seconds: float,
-    attempts: int,
-    accepted: bool,
-    outcome: str,
-    rejection_reason: str | None = None,
-) -> None:
-    """Write structured performance and remediation metrics in English."""
-    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-
-    entry = {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "workload_kind": workload_kind,
-        "workload_name": workload_name,
-        "namespace": namespace,
-        "container_type": container_type,
-        "container_name": container_name,
-        "original_image": original_image,
-        "target_image": target_image,
-        "finding_id": finding.get("id") if finding else None,
-        "severity": finding.get("severity") if finding else None,
-        "trivy_scan_latency_seconds": round(trivy_latency_seconds, 3),
-        "llm_generation_latency_seconds": round(llm_latency_seconds, 3),
-        "validation_latency_seconds": round(validation_latency_seconds, 3),
-        "end_to_end_latency_seconds": round(end_to_end_latency_seconds, 3),
-        "attempts": attempts,
-        "accepted": accepted,
-        "outcome": outcome,
-        "rejection_reason": rejection_reason,
+def finding_ids(findings: list[dict]) -> set[str]:
+    """Return all CVE IDs from a Trivy finding list."""
+    return {
+        finding["id"]
+        for finding in findings
+        if finding.get("id")
     }
 
+
+def filter_findings_by_severity(
+    findings: list[dict],
+    severities: set[str],
+) -> list[dict]:
+    """Return findings matching one of the requested severities."""
+    return [
+        finding
+        for finding in findings
+        if finding.get("severity") in severities
+    ]
+
+
+def high_critical_cve_ids(findings: list[dict]) -> set[str]:
+    """Return HIGH and CRITICAL CVE IDs."""
+    return finding_ids(
+        filter_findings_by_severity(
+            findings=findings,
+            severities=RELEVANT_SEVERITIES,
+        )
+    )
+
+
+def critical_cve_ids(findings: list[dict]) -> set[str]:
+    """Return CRITICAL CVE IDs."""
+    return finding_ids(
+        filter_findings_by_severity(
+            findings=findings,
+            severities={"CRITICAL"},
+        )
+    )
+
+
+def verify_target_image(
+    original_findings: list[dict],
+    target_findings: list[dict],
+    image_policy: dict,
+) -> tuple[bool, dict]:
+    """
+    Compare Trivy results of original and approved target images.
+
+    The update is rejected if:
+    - no relevant HIGH/CRITICAL CVE is resolved;
+    - the policy requires all original relevant CVEs to disappear but some remain;
+    - new CRITICAL CVEs appear in the target image.
+    """
+    original_relevant = high_critical_cve_ids(original_findings)
+    target_relevant = high_critical_cve_ids(target_findings)
+
+    original_critical = critical_cve_ids(original_findings)
+    target_critical = critical_cve_ids(target_findings)
+
+    resolved_cves = sorted(original_relevant - target_relevant)
+    remaining_cves = sorted(original_relevant & target_relevant)
+    new_critical_cves = sorted(target_critical - original_critical)
+
+    require_all_resolved = image_policy.get(
+        "require_all_high_critical_resolved",
+        False,
+    )
+
+    require_no_new_critical = image_policy.get(
+        "require_no_new_critical_cves",
+        True,
+    )
+
+    evidence = {
+        "resolved_cves": resolved_cves,
+        "remaining_cves": remaining_cves,
+        "new_critical_cves": new_critical_cves,
+    }
+
+    if not resolved_cves:
+        evidence["reason"] = (
+            "approved_target_does_not_improve_relevant_cves"
+        )
+        return False, evidence
+
+    if require_all_resolved and remaining_cves:
+        evidence["reason"] = "relevant_cves_remain_in_target_image"
+        return False, evidence
+
+    if require_no_new_critical and new_critical_cves:
+        evidence["reason"] = "new_critical_cves_in_target_image"
+        return False, evidence
+
+    evidence["reason"] = None
+    return True, evidence
+
+
+def validate_only_target_image_changed(
+    original_document: dict,
+    updated_document: dict,
+    container_key: str,
+    container_name: str,
+    target_image: str,
+) -> tuple[bool, str | None]:
+    """
+    Validate that no field besides the target container image changed.
+    """
+    expected_document = copy.deepcopy(original_document)
+
+    changed = update_container_image(
+        document=expected_document,
+        container_key=container_key,
+        container_name=container_name,
+        target_image=target_image,
+    )
+
+    if not changed:
+        return False, "target_container_not_found_in_original_document"
+
+    if expected_document != updated_document:
+        return False, "unexpected_manifest_change_detected"
+
+    return True, None
+
+
+def log_run(**entry: object) -> None:
+    """Write structured pipeline metrics to JSONL."""
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
+    entry["timestamp_utc"] = datetime.now(
+        timezone.utc
+    ).isoformat()
+
     with open(LOG_FILE, "a", encoding="utf-8") as log_file:
-        log_file.write(json.dumps(entry) + "\n")
+        log_file.write(
+            json.dumps(entry, ensure_ascii=False) + "\n"
+        )
 
 
 def process_container(
-    current_manifest: str,
+    document: dict,
     workload_kind: str,
     workload_name: str,
     namespace: str,
     target: dict,
-) -> tuple[str, bool]:
-    """Scan and remediate one exact container inside a workload."""
+    policy: dict,
+) -> tuple[dict, bool, str | None]:
+    """Scan, validate and remediate exactly one container."""
     original_image = target["image"]
-    container_name = target["container_name"]
-    container_type = target["container_type"]
     container_key = target["container_key"]
+    container_name = target["container_name"]
 
-    run_started = time.perf_counter()
+    started = time.perf_counter()
 
     print(
         f"\n[DISCOVERY] {workload_kind}/{workload_name} | "
-        f"{container_type}/{container_name} | image={original_image}"
+        f"{container_key}/{container_name} | "
+        f"image={original_image}"
     )
 
-    trivy_started = time.perf_counter()
-
     try:
-        finding = scan_image(original_image)
+        original_findings = scan_image(original_image)
     except Exception as error:
-        trivy_latency = time.perf_counter() - trivy_started
-        total_latency = time.perf_counter() - run_started
-
-        print(f"[ERROR] Trivy scan failed for {original_image}: {error}")
+        print(f"[ERROR] Original image scan failed: {error}")
 
         log_run(
+            outcome="original_scanner_failed",
+            accepted=False,
             workload_kind=workload_kind,
             workload_name=workload_name,
             namespace=namespace,
-            container_type=container_type,
             container_name=container_name,
             original_image=original_image,
             target_image=None,
-            finding=None,
-            trivy_latency_seconds=trivy_latency,
-            llm_latency_seconds=0.0,
-            validation_latency_seconds=0.0,
-            end_to_end_latency_seconds=total_latency,
-            attempts=0,
-            accepted=False,
-            outcome="scanner_failed",
             rejection_reason=str(error),
         )
 
-        return current_manifest, False
+        return document, False, None
 
-    trivy_latency = time.perf_counter() - trivy_started
-
-    if not finding:
-        total_latency = time.perf_counter() - run_started
-
-        print(f"[SKIP] No vulnerabilities found for {original_image}.")
-
-        log_run(
-            workload_kind=workload_kind,
-            workload_name=workload_name,
-            namespace=namespace,
-            container_type=container_type,
-            container_name=container_name,
-            original_image=original_image,
-            target_image=None,
-            finding=None,
-            trivy_latency_seconds=trivy_latency,
-            llm_latency_seconds=0.0,
-            validation_latency_seconds=0.0,
-            end_to_end_latency_seconds=total_latency,
-            attempts=0,
-            accepted=False,
-            outcome="no_vulnerability",
-        )
-
-        return current_manifest, False
-
-    if finding.get("severity") not in SUPPORTED_SEVERITIES:
-        return current_manifest, False
-
-    print(
-        f"[DISCOVERY] Finding={finding.get('id')} "
-        f"severity={finding.get('severity')}"
+    relevant_original_findings = filter_findings_by_severity(
+        original_findings,
+        RELEVANT_SEVERITIES,
     )
 
-    target_image, target_source = select_target_image(original_image)
-
-    if not target_image:
-        total_latency = time.perf_counter() - run_started
-
-        print(
-            f"[SKIP] No approved container-image remediation target "
-            f"for {original_image}."
-        )
+    if not relevant_original_findings:
+        print("[SKIP] No HIGH or CRITICAL vulnerabilities found.")
 
         log_run(
+            outcome="no_relevant_vulnerability",
+            accepted=False,
             workload_kind=workload_kind,
             workload_name=workload_name,
             namespace=namespace,
-            container_type=container_type,
             container_name=container_name,
             original_image=original_image,
             target_image=None,
-            finding=finding,
-            trivy_latency_seconds=trivy_latency,
-            llm_latency_seconds=0.0,
-            validation_latency_seconds=0.0,
-            end_to_end_latency_seconds=total_latency,
-            attempts=0,
-            accepted=False,
-            outcome="no_approved_target",
-            rejection_reason=(
-                "no_approved_container_image_target; "
-                "trivy_fixed_version_not_used_as_image_tag"
-            ),
+            original_finding_count=len(original_findings),
+            rejection_reason=None,
         )
 
-        return current_manifest, False
+        return document, False, None
 
-    if not image_exists_in_registry(target_image):
-        total_latency = time.perf_counter() - run_started
+    target_image, selection_reason, image_policy = select_approved_target(
+        original_image=original_image,
+        policy=policy,
+    )
 
-        print(f"[SKIP] Approved target image is unavailable: {target_image}")
+    if not target_image:
+        print(
+            f"[SKIP] No approved target image: {selection_reason}"
+        )
 
         log_run(
+            outcome="no_approved_target",
+            accepted=False,
             workload_kind=workload_kind,
             workload_name=workload_name,
             namespace=namespace,
-            container_type=container_type,
+            container_name=container_name,
+            original_image=original_image,
+            target_image=None,
+            rejection_reason=selection_reason,
+        )
+
+        return document, False, None
+
+    if not image_exists_in_registry(target_image):
+        print(f"[SKIP] Target image unavailable: {target_image}")
+
+        log_run(
+            outcome="target_image_unavailable",
+            accepted=False,
+            workload_kind=workload_kind,
+            workload_name=workload_name,
+            namespace=namespace,
             container_name=container_name,
             original_image=original_image,
             target_image=target_image,
-            finding=finding,
-            trivy_latency_seconds=trivy_latency,
-            llm_latency_seconds=0.0,
-            validation_latency_seconds=0.0,
-            end_to_end_latency_seconds=total_latency,
-            attempts=0,
-            accepted=False,
-            outcome="target_image_unavailable",
-            rejection_reason=f"approved_target_not_available: {target_source}",
+            rejection_reason="docker_manifest_inspect_failed",
         )
 
-        return current_manifest, False
+        return document, False, None
 
-    print(
-        f"[AGENT] Generating remediation for {container_type}/{container_name}: "
-        f"{original_image} -> {target_image}"
+    try:
+        target_findings = scan_image(target_image)
+    except Exception as error:
+        print(f"[ERROR] Target image scan failed: {error}")
+
+        log_run(
+            outcome="target_scanner_failed",
+            accepted=False,
+            workload_kind=workload_kind,
+            workload_name=workload_name,
+            namespace=namespace,
+            container_name=container_name,
+            original_image=original_image,
+            target_image=target_image,
+            rejection_reason=str(error),
+        )
+
+        return document, False, None
+
+    accepted, evidence = verify_target_image(
+        original_findings=original_findings,
+        target_findings=target_findings,
+        image_policy=image_policy,
     )
 
-    agent_result, attempts, llm_latency = generate_manifest_with_retry(
-        finding=finding,
-        current_manifest=current_manifest,
-        workload_kind=workload_kind,
-        workload_name=workload_name,
-        container_type=container_type,
+    if not accepted:
+        print(
+            "[SKIP] Approved target rejected by Trivy validation: "
+            f"{evidence['reason']}"
+        )
+
+        log_run(
+            outcome="target_rejected_by_security_validation",
+            accepted=False,
+            workload_kind=workload_kind,
+            workload_name=workload_name,
+            namespace=namespace,
+            container_name=container_name,
+            original_image=original_image,
+            target_image=target_image,
+            resolved_cves=evidence["resolved_cves"],
+            remaining_cves=evidence["remaining_cves"],
+            new_critical_cves=evidence["new_critical_cves"],
+            rejection_reason=evidence["reason"],
+        )
+
+        return document, False, None
+
+    original_document = copy.deepcopy(document)
+
+    changed = update_container_image(
+        document=document,
+        container_key=container_key,
         container_name=container_name,
-        original_image=original_image,
         target_image=target_image,
     )
 
-    manifest_text = agent_result.get("manifest")
+    if not changed:
+        print("[REJECTED] Target container not found.")
+        return original_document, False, None
 
-    if not manifest_text:
-        total_latency = time.perf_counter() - run_started
-
-        print(f"[REJECTED] No usable LLM output for {container_name}.")
-
-        log_run(
-            workload_kind=workload_kind,
-            workload_name=workload_name,
-            namespace=namespace,
-            container_type=container_type,
-            container_name=container_name,
-            original_image=original_image,
-            target_image=target_image,
-            finding=finding,
-            trivy_latency_seconds=trivy_latency,
-            llm_latency_seconds=llm_latency,
-            validation_latency_seconds=0.0,
-            end_to_end_latency_seconds=total_latency,
-            attempts=attempts,
-            accepted=False,
-            outcome="rejected",
-            rejection_reason="no_manifest_returned",
-        )
-
-        return current_manifest, False
-
-    valid, rejection_reason, validation_latency = validate_manifest(
-        manifest_text=manifest_text,
-        workload_kind=workload_kind,
-        workload_name=workload_name,
+    valid, rejection_reason = validate_only_target_image_changed(
+        original_document=original_document,
+        updated_document=document,
         container_key=container_key,
         container_name=container_name,
-        expected_image=target_image,
+        target_image=target_image,
     )
-
-    total_latency = time.perf_counter() - run_started
 
     if not valid:
-        print(f"[REJECTED] {container_name}: {rejection_reason}")
+        print(f"[REJECTED] Invalid manifest change: {rejection_reason}")
+        return original_document, False, None
 
-        log_run(
-            workload_kind=workload_kind,
-            workload_name=workload_name,
-            namespace=namespace,
-            container_type=container_type,
-            container_name=container_name,
-            original_image=original_image,
-            target_image=target_image,
-            finding=finding,
-            trivy_latency_seconds=trivy_latency,
-            llm_latency_seconds=llm_latency,
-            validation_latency_seconds=validation_latency,
-            end_to_end_latency_seconds=total_latency,
-            attempts=attempts,
-            accepted=False,
-            outcome="rejected",
-            rejection_reason=rejection_reason,
-        )
+    policy_owner = image_policy.get("owner", "unknown-team")
 
-        return current_manifest, False
-
-    print(
-        f"[SAVED] {workload_kind}/{workload_name} | "
-        f"{container_type}/{container_name} | "
-        f"attempts={attempts} | "
-        f"end_to_end_latency={total_latency:.2f}s"
-    )
-
-    log_run(
+    pr_description = generate_pr_description(
         workload_kind=workload_kind,
         workload_name=workload_name,
         namespace=namespace,
-        container_type=container_type,
         container_name=container_name,
         original_image=original_image,
         target_image=target_image,
-        finding=finding,
-        trivy_latency_seconds=trivy_latency,
-        llm_latency_seconds=llm_latency,
-        validation_latency_seconds=validation_latency,
-        end_to_end_latency_seconds=total_latency,
-        attempts=attempts,
-        accepted=True,
-        outcome="remediated",
+        policy_owner=policy_owner,
+        resolved_cves=evidence["resolved_cves"],
+        remaining_cves=evidence["remaining_cves"],
+        new_critical_cves=evidence["new_critical_cves"],
     )
 
-    return manifest_text, True
+    elapsed = time.perf_counter() - started
+
+    print(
+        f"[SAVED] {original_image} -> {target_image} | "
+        f"resolved={len(evidence['resolved_cves'])} | "
+        f"duration={elapsed:.2f}s"
+    )
+
+    log_run(
+        outcome="remediated",
+        accepted=True,
+        workload_kind=workload_kind,
+        workload_name=workload_name,
+        namespace=namespace,
+        container_name=container_name,
+        original_image=original_image,
+        target_image=target_image,
+        resolved_cves=evidence["resolved_cves"],
+        remaining_cves=evidence["remaining_cves"],
+        new_critical_cves=evidence["new_critical_cves"],
+        duration_seconds=round(elapsed, 3),
+        rejection_reason=None,
+    )
+
+    return document, True, pr_description
 
 
-def process_document(chunk: str, filepath: str) -> tuple[str, bool]:
-    """Process all supported containers in one YAML workload document."""
-    try:
-        document = yaml.safe_load(chunk)
-    except yaml.YAMLError as error:
-        print(f"[SKIP] Invalid YAML in {os.path.basename(filepath)}: {error}")
-        return chunk, False
-
-    if not document or document.get("kind") not in SUPPORTED_WORKLOAD_KINDS:
-        return chunk, False
+def process_document(
+    document: dict,
+    policy: dict,
+) -> tuple[dict, bool, list[str]]:
+    """Process every regular and init container in one workload."""
+    if not document:
+        return document, False, []
 
     workload_kind = document.get("kind")
-    workload_name = document.get("metadata", {}).get("name", "unknown")
-    namespace = document.get("metadata", {}).get("namespace", "default")
 
-    initial_targets = get_workload_containers(document)
+    if workload_kind not in SUPPORTED_WORKLOAD_KINDS:
+        return document, False, []
 
-    if not initial_targets:
-        return chunk, False
+    metadata = document.get("metadata", {})
+    workload_name = metadata.get("name", "unknown")
+    namespace = metadata.get("namespace", "default")
 
-    current_manifest = chunk
+    targets = get_workload_containers(document)
+
+    if not targets:
+        return document, False, []
+
     document_changed = False
+    pr_descriptions = []
 
-    # Re-parse after each accepted remediation because the manifest may have
-    # changed during the previous container remediation.
-    for initial_target in initial_targets:
-        try:
-            current_document = yaml.safe_load(current_manifest)
-        except yaml.YAMLError:
-            break
-
+    for initial_target in targets:
         current_image = get_container_image(
-            current_document,
-            initial_target["container_key"],
-            initial_target["container_name"],
+            document=document,
+            container_key=initial_target["container_key"],
+            container_name=initial_target["container_name"],
         )
 
         if not current_image:
@@ -576,51 +554,81 @@ def process_document(chunk: str, filepath: str) -> tuple[str, bool]:
         target = dict(initial_target)
         target["image"] = current_image
 
-        current_manifest, container_changed = process_container(
-            current_manifest=current_manifest,
+        document, changed, pr_description = process_container(
+            document=document,
             workload_kind=workload_kind,
             workload_name=workload_name,
             namespace=namespace,
             target=target,
+            policy=policy,
         )
 
-        document_changed = document_changed or container_changed
+        document_changed = document_changed or changed
 
-    return current_manifest, document_changed
+        if pr_description:
+            pr_descriptions.append(pr_description)
+
+    return document, document_changed, pr_descriptions
 
 
-def create_or_update_pull_request(updates_made: list[str]) -> None:
-    """Push a remediation branch and create or update one open PR."""
-    branch_name = "remediation/bulk-update"
+def create_or_update_pull_request(
+    updated_files: list[str],
+    pr_descriptions: list[str],
+) -> None:
+    """Push the remediation branch and create or update one PR."""
+    if not updated_files:
+        return
 
-    print("\n[GIT] Creating or updating remediation Pull Request...")
+    pr_body = "\n\n---\n\n".join(pr_descriptions)
+
+    if not pr_body:
+        pr_body = (
+            "Automated container image remediation proposal.\n\n"
+            "Human review is required before merge."
+        )
 
     try:
         subprocess.run(["git", "checkout", "main"], check=True)
+        subprocess.run(["git", "pull", "origin", "main"], check=True)
 
         subprocess.run(
-            ["git", "branch", "-D", branch_name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            ["git", "checkout", "-B", BRANCH_NAME],
+            check=True,
         )
 
-        subprocess.run(["git", "checkout", "-b", branch_name], check=True)
+        subprocess.run(
+            ["git", "add", *updated_files],
+            check=True,
+        )
 
-        for filepath in updates_made:
-            subprocess.run(["git", "add", filepath], check=True)
+        staged_changes = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            check=False,
+        )
+
+        if staged_changes.returncode == 0:
+            print("[GIT] No staged changes. No Pull Request created.")
+            return
 
         subprocess.run(
             [
                 "git",
                 "commit",
                 "-m",
-                "security: automated remediation of vulnerable container images",
+                "security: update images to approved baselines",
             ],
             check=True,
         )
 
         subprocess.run(
-            ["git", "push", "origin", branch_name, "--force"],
+            [
+                "git",
+                "push",
+                "--set-upstream",
+                "origin",
+                BRANCH_NAME,
+                "--force",
+            ],
             check=True,
         )
 
@@ -630,7 +638,7 @@ def create_or_update_pull_request(updates_made: list[str]) -> None:
                 "pr",
                 "list",
                 "--head",
-                branch_name,
+                BRANCH_NAME,
                 "--base",
                 "main",
                 "--state",
@@ -648,7 +656,18 @@ def create_or_update_pull_request(updates_made: list[str]) -> None:
         existing_url = existing_pr.stdout.strip()
 
         if existing_url:
-            print(f"[DONE] Existing remediation PR updated: {existing_url}")
+            subprocess.run(
+                [
+                    "gh",
+                    "pr",
+                    "edit",
+                    existing_url,
+                    "--body",
+                    pr_body,
+                ],
+                check=True,
+            )
+            print(f"[DONE] Existing Pull Request updated: {existing_url}")
             return
 
         created_pr = subprocess.run(
@@ -657,15 +676,13 @@ def create_or_update_pull_request(updates_made: list[str]) -> None:
                 "pr",
                 "create",
                 "--title",
-                "Security Patch: Container Image Remediation",
+                "security: remediation via approved image baselines",
                 "--body",
-                (
-                    "Automated remediation proposal generated by the "
-                    "vulnerability remediation agent.\n\n"
-                    "Please review all image-version updates before merging."
-                ),
+                pr_body,
                 "--base",
                 "main",
+                "--head",
+                BRANCH_NAME,
             ],
             capture_output=True,
             text=True,
@@ -675,24 +692,35 @@ def create_or_update_pull_request(updates_made: list[str]) -> None:
         print(f"[DONE] Pull Request created: {created_pr.stdout.strip()}")
 
     except subprocess.CalledProcessError as error:
-        print(f"[ERROR] Git or Pull Request operation failed: {error}")
+        print(f"[ERROR] Git or GitHub operation failed: {error}")
 
 
 def main() -> None:
-    manifest_dir = os.path.join(PROJECT_ROOT, "manifests", "base")
-    yaml_files = sorted(glob.glob(os.path.join(manifest_dir, "*.yaml")))
+    """Run the complete remediation pipeline."""
+    policy = load_image_policy(POLICY_FILE)
 
-    updates_made = []
+    yaml_files = sorted(
+        glob.glob(
+            os.path.join(MANIFEST_DIRECTORY, "*.yaml")
+        )
+    )
 
-    print("[START] Scanning Kubernetes workload manifests...")
+    if not yaml_files:
+        print(f"[DONE] No YAML files found in: {MANIFEST_DIRECTORY}")
+        return
+
+    updated_files = []
+    all_pr_descriptions = []
+
+    print("[START] Team-approved image remediation pipeline")
     print(
         "[INFO] Supported workload kinds: "
         + ", ".join(sorted(SUPPORTED_WORKLOAD_KINDS))
     )
 
     for filepath in yaml_files:
-        with open(filepath, "r", encoding="utf-8") as manifest_file:
-            full_content = manifest_file.read()
+        with open(filepath, "r", encoding="utf-8") as file:
+            full_content = file.read()
 
         chunks = split_yaml_documents(full_content)
         updated_chunks = []
@@ -703,24 +731,49 @@ def main() -> None:
                 updated_chunks.append(chunk)
                 continue
 
-            updated_chunk, changed = process_document(chunk, filepath)
-            updated_chunks.append(updated_chunk)
+            try:
+                document = yaml.safe_load(chunk)
+            except yaml.YAMLError as error:
+                print(
+                    f"[SKIP] Invalid YAML in "
+                    f"{os.path.basename(filepath)}: {error}"
+                )
+                updated_chunks.append(chunk)
+                continue
+
+            updated_document, changed, pr_descriptions = process_document(
+                document=document,
+                policy=policy,
+            )
+
+            if changed:
+                updated_chunks.append(
+                    yaml.safe_dump(
+                        updated_document,
+                        sort_keys=False,
+                    ).strip()
+                )
+            else:
+                updated_chunks.append(chunk.strip())
+
             file_changed = file_changed or changed
+            all_pr_descriptions.extend(pr_descriptions)
 
         if file_changed:
-            with open(filepath, "w", encoding="utf-8") as manifest_file:
-                manifest_file.write(
-                    "\n---\n".join(item.strip("\n") for item in updated_chunks)
-                )
-                manifest_file.write("\n")
+            with open(filepath, "w", encoding="utf-8") as file:
+                file.write("\n---\n".join(updated_chunks))
+                file.write("\n")
 
-            updates_made.append(filepath)
+            updated_files.append(filepath)
 
-    if not updates_made:
-        print("\n[DONE] No patchable findings found. No Pull Request created.")
+    if not updated_files:
+        print("\n[DONE] No approved and Trivy-verified remediation found.")
         return
 
-    create_or_update_pull_request(updates_made)
+    create_or_update_pull_request(
+        updated_files=updated_files,
+        pr_descriptions=all_pr_descriptions,
+    )
 
 
 if __name__ == "__main__":
