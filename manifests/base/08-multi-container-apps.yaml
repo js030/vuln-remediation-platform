@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: app
-        image: nginx:1.24.0
+        image: nginx:1.14.0
       - name: sidecar-redis
         image: redis:5.0.9
       - name: sidecar-helper
@@ -41,4 +41,4 @@ spec:
         image: busybox:1.28.0
       containers:
       - name: main
-        image: httpd:2.4.58
+        image: httpd:2.4.49
