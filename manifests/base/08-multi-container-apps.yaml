@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: app
-          image: nginx:1.24.0
+          image: nginx:1.14.0
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -43,4 +43,4 @@ spec:
               sleep 2
       containers:
         - name: main
-          image: httpd:2.4.58
+          image: httpd:2.4.49
