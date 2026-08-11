@@ -23,11 +23,18 @@ def main():
     records = []
 
     for line in LOG_FILE.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            records.append(json.loads(line))
+        if not line.strip():
+            continue
+
+        item = json.loads(line)
+
+        # Only evaluate the current metric schema.
+        if "outcome" in item and "timestamp_utc" in item:
+            records.append(item)
 
     if not records:
-        print("No metrics records found.")
+        print("No current-schema metrics records found.")
+        print("Run the remediation pipeline at least once.")
         return
 
     remediated = [
@@ -57,18 +64,21 @@ def main():
     patchable = remediated + rejected
 
     trivy_latencies = [
-        item.get("trivy_scan_latency_seconds", 0)
+        item["trivy_scan_latency_seconds"]
         for item in records
+        if isinstance(item.get("trivy_scan_latency_seconds"), (int, float))
     ]
 
     llm_latencies = [
-        item.get("llm_generation_latency_seconds", 0)
+        item["llm_generation_latency_seconds"]
         for item in patchable
+        if isinstance(item.get("llm_generation_latency_seconds"), (int, float))
     ]
 
     end_to_end_latencies = [
-        item.get("end_to_end_latency_seconds", 0)
+        item["end_to_end_latency_seconds"]
         for item in records
+        if isinstance(item.get("end_to_end_latency_seconds"), (int, float))
     ]
 
     first_attempt_successes = [
@@ -94,20 +104,15 @@ def main():
 
     print("\n2. REMEDIATION QUALITY")
     print(
-        "Remediation Success Rate "
-        f"(successful / patchable): "
+        "Remediation Success Rate (successful / patchable): "
         f"{percentage(len(remediated), len(patchable))}%"
     )
-
     print(
-        "First-Attempt Success Rate "
-        f"(successful first attempt / patchable): "
+        "First-Attempt Success Rate (successful first attempt / patchable): "
         f"{percentage(len(first_attempt_successes), len(patchable))}%"
     )
-
     print(
-        "Retry Rate "
-        f"(patchable findings requiring >1 attempt): "
+        "Retry Rate (patchable findings requiring >1 attempt): "
         f"{percentage(retry_count, len(patchable))}%"
     )
 
@@ -117,7 +122,6 @@ def main():
     print(f"Average End-to-End Latency: {average(end_to_end_latencies)} seconds")
 
     print("\n4. RESULTS BY SEVERITY")
-
     by_severity = defaultdict(list)
 
     for item in records:
@@ -139,19 +143,14 @@ def main():
         )
 
     print("\n5. OUTCOME DISTRIBUTION")
-
-    outcomes = Counter(
-        item.get("outcome", "unknown")
-        for item in records
-    )
+    outcomes = Counter(item.get("outcome", "unknown") for item in records)
 
     for outcome, count in outcomes.most_common():
         print(f"{outcome:<30}{count}")
 
     print("\n6. REJECTION / SKIP REASONS")
-
     reasons = Counter(
-        item.get("rejection_reason", "not_recorded")
+        item.get("rejection_reason")
         for item in records
         if item.get("rejection_reason")
     )
@@ -163,22 +162,10 @@ def main():
         print("No rejection or skip reasons recorded.")
 
     print("\nKPI DEFINITIONS")
-    print(
-        "- Remediation Success Rate: successful remediations / "
-        "patchable findings"
-    )
-    print(
-        "- First-Attempt Success Rate: successful first attempts / "
-        "patchable findings"
-    )
-    print(
-        "- Retry Rate: patchable findings requiring more than one "
-        "LLM generation attempt"
-    )
-    print(
-        "- End-to-End Latency: Trivy scan, LLM generation, validation, "
-        "and remediation decision per container"
-    )
+    print("- Remediation Success Rate: successful remediations / patchable findings")
+    print("- First-Attempt Success Rate: successful first attempts / patchable findings")
+    print("- Retry Rate: patchable findings requiring more than one LLM attempt")
+    print("- End-to-End Latency: scan, LLM generation, validation and decision time")
     print("=" * 70)
 
 
