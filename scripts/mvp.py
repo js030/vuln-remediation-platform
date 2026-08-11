@@ -1,6 +1,7 @@
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -17,10 +18,20 @@ from src.reasoning.agent import generate_manifest
 SUPPORTED_WORKLOAD_KINDS = {"Deployment", "StatefulSet", "DaemonSet"}
 SUPPORTED_SEVERITIES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 
-DEMO_FALLBACK_MAP = {
-    "nginx:1.14.0": "1.24.0",
-    "redis:5.0.9": "7.0.14",
-    "httpd:2.4.49": "2.4.58",
+# Approved and tested image remediation targets.
+#
+# Important:
+# Trivy FixedVersion values often refer to packages inside a container image.
+# They must NOT automatically be interpreted as valid replacement image tags.
+#
+# Add targets only after validating that the target image:
+# 1. exists in the registry,
+# 2. can be pulled by the cluster,
+# 3. is acceptable for the workload.
+APPROVED_IMAGE_REMEDIATION_MAP = {
+    "nginx:1.14.0": "nginx:1.24.0",
+    "redis:5.0.9": "redis:7.0.14",
+    "httpd:2.4.49": "httpd:2.4.58",
 }
 
 MAX_RETRIES = 2
@@ -30,32 +41,12 @@ LOG_FILE = os.path.join(PROJECT_ROOT, "logs", "pipeline_metrics.jsonl")
 
 
 def split_yaml_documents(content: str) -> list[str]:
-    """Split a multi-document YAML file while preserving individual documents."""
-    return content.split("\n---\n")
-
-
-def build_image_reference(original_image: str, fixed_version: str) -> str:
-    """
-    Replace only the image tag. Supports image repositories with registry ports.
-
-    Examples:
-      nginx:1.14.0                  -> nginx:<fixed>
-      registry.example:5000/app:1.0 -> registry.example:5000/app:<fixed>
-    """
-    image_without_digest = original_image.split("@", 1)[0]
-    last_slash = image_without_digest.rfind("/")
-    last_colon = image_without_digest.rfind(":")
-
-    if last_colon > last_slash:
-        repository = image_without_digest[:last_colon]
-    else:
-        repository = image_without_digest
-
-    return f"{repository}:{fixed_version}"
+    """Split a multi-document YAML file into individual YAML documents."""
+    return re.split(r"(?m)^---\s*$", content)
 
 
 def image_exists_in_registry(image_ref: str) -> bool:
-    """Verify that the selected target image exists in the registry."""
+    """Check whether a target image exists in the container registry."""
     try:
         result = subprocess.run(
             ["docker", "manifest", "inspect", image_ref],
@@ -68,12 +59,25 @@ def image_exists_in_registry(image_ref: str) -> bool:
         return False
 
 
+def select_target_image(original_image: str) -> tuple[str | None, str]:
+    """
+    Select an approved replacement image.
+
+    The target is determined by an approved image policy, not directly from
+    Trivy FixedVersion, because a Trivy fixed version often refers to an
+    operating-system package version inside an image.
+    """
+    target_image = APPROVED_IMAGE_REMEDIATION_MAP.get(original_image)
+
+    if target_image:
+        return target_image, "approved_image_policy"
+
+    return None, "no_approved_image_target"
+
+
 def get_workload_containers(document: dict) -> list[dict]:
     """
-    Return all regular containers and init containers of supported workloads.
-
-    Each returned item contains enough metadata to validate the exact target
-    after LLM generation.
+    Return all regular containers and init containers in a supported workload.
     """
     if not document or document.get("kind") not in SUPPORTED_WORKLOAD_KINDS:
         return []
@@ -86,11 +90,11 @@ def get_workload_containers(document: dict) -> list[dict]:
 
     targets = []
 
-    for container_type, key in (
+    for container_type, container_key in (
         ("containers", "containers"),
         ("initContainers", "initContainers"),
     ):
-        for index, container in enumerate(pod_spec.get(key, []) or []):
+        for index, container in enumerate(pod_spec.get(container_key, []) or []):
             image = container.get("image")
             name = container.get("name")
 
@@ -98,7 +102,7 @@ def get_workload_containers(document: dict) -> list[dict]:
                 targets.append(
                     {
                         "container_type": container_type,
-                        "container_key": key,
+                        "container_key": container_key,
                         "container_index": index,
                         "container_name": name,
                         "image": image,
@@ -113,7 +117,7 @@ def get_container_image(
     container_key: str,
     container_name: str,
 ) -> str | None:
-    """Find the image of one exact container by group and name."""
+    """Return the image of one exact container identified by name."""
     pod_spec = (
         document.get("spec", {})
         .get("template", {})
@@ -136,34 +140,49 @@ def validate_manifest(
     expected_image: str,
 ) -> tuple[bool, str | None, float]:
     """
-    Validate YAML, workload identity, and the exact target container image.
+    Validate generated YAML and verify the exact target container image.
     """
     validation_started = time.perf_counter()
 
     try:
         parsed = yaml.safe_load(manifest_text)
     except yaml.YAMLError as error:
-        return False, f"yaml_syntax_error: {error}", time.perf_counter() - validation_started
+        return (
+            False,
+            f"yaml_syntax_error: {error}",
+            time.perf_counter() - validation_started,
+        )
 
     if not parsed:
-        return False, "empty_yaml_document", time.perf_counter() - validation_started
+        return (
+            False,
+            "empty_yaml_document",
+            time.perf_counter() - validation_started,
+        )
 
     if parsed.get("kind") != workload_kind:
         return (
             False,
-            f"unexpected_workload_kind: expected={workload_kind}, actual={parsed.get('kind')}",
+            f"unexpected_workload_kind: expected={workload_kind}, "
+            f"actual={parsed.get('kind')}",
             time.perf_counter() - validation_started,
         )
 
-    actual_name = parsed.get("metadata", {}).get("name")
-    if actual_name != workload_name:
+    actual_workload_name = parsed.get("metadata", {}).get("name")
+
+    if actual_workload_name != workload_name:
         return (
             False,
-            f"unexpected_workload_name: expected={workload_name}, actual={actual_name}",
+            f"unexpected_workload_name: expected={workload_name}, "
+            f"actual={actual_workload_name}",
             time.perf_counter() - validation_started,
         )
 
-    actual_image = get_container_image(parsed, container_key, container_name)
+    actual_image = get_container_image(
+        parsed,
+        container_key,
+        container_name,
+    )
 
     if actual_image is None:
         return (
@@ -175,7 +194,8 @@ def validate_manifest(
     if actual_image != expected_image:
         return (
             False,
-            f"target_image_mismatch: expected={expected_image}, actual={actual_image}",
+            f"target_image_mismatch: expected={expected_image}, "
+            f"actual={actual_image}",
             time.perf_counter() - validation_started,
         )
 
@@ -192,12 +212,12 @@ def generate_manifest_with_retry(
     original_image: str,
     target_image: str,
 ) -> tuple[dict, int, float]:
-    """Generate a candidate manifest with a limited retry policy."""
+    """Generate a manifest proposal with limited retry handling."""
     last_result = None
     total_llm_latency = 0.0
 
     for attempt in range(1, MAX_RETRIES + 2):
-        llm_started = time.perf_counter()
+        generation_started = time.perf_counter()
 
         result = generate_manifest(
             finding=finding,
@@ -210,7 +230,7 @@ def generate_manifest_with_retry(
             target_image=target_image,
         )
 
-        total_llm_latency += time.perf_counter() - llm_started
+        total_llm_latency += time.perf_counter() - generation_started
         last_result = result
 
         if result.get("manifest") and result.get("is_valid_yaml"):
@@ -238,7 +258,7 @@ def log_run(
     outcome: str,
     rejection_reason: str | None = None,
 ) -> None:
-    """Write structured English metrics for performance analysis."""
+    """Write structured performance and remediation metrics in English."""
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
     entry = {
@@ -268,13 +288,12 @@ def log_run(
 
 def process_container(
     current_manifest: str,
-    filepath: str,
     workload_kind: str,
     workload_name: str,
     namespace: str,
     target: dict,
 ) -> tuple[str, bool]:
-    """Scan and remediate one exact container within one workload document."""
+    """Scan and remediate one exact container inside a workload."""
     original_image = target["image"]
     container_name = target["container_name"]
     container_type = target["container_type"]
@@ -315,12 +334,14 @@ def process_container(
             outcome="scanner_failed",
             rejection_reason=str(error),
         )
+
         return current_manifest, False
 
     trivy_latency = time.perf_counter() - trivy_started
 
     if not finding:
         total_latency = time.perf_counter() - run_started
+
         print(f"[SKIP] No vulnerabilities found for {original_image}.")
 
         log_run(
@@ -340,11 +361,10 @@ def process_container(
             accepted=False,
             outcome="no_vulnerability",
         )
+
         return current_manifest, False
 
     if finding.get("severity") not in SUPPORTED_SEVERITIES:
-        print(f"[SKIP] Unsupported severity: {finding.get('severity')}.")
-
         return current_manifest, False
 
     print(
@@ -352,14 +372,15 @@ def process_container(
         f"severity={finding.get('severity')}"
     )
 
-    fixed_version = finding.get("fixed_version") or finding.get("FixedVersion")
+    target_image, target_source = select_target_image(original_image)
 
-    if not fixed_version and original_image in DEMO_FALLBACK_MAP:
-        fixed_version = DEMO_FALLBACK_MAP[original_image]
-
-    if not fixed_version:
+    if not target_image:
         total_latency = time.perf_counter() - run_started
-        print(f"[SKIP] No secure version available for {original_image}.")
+
+        print(
+            f"[SKIP] No approved container-image remediation target "
+            f"for {original_image}."
+        )
 
         log_run(
             workload_kind=workload_kind,
@@ -376,16 +397,19 @@ def process_container(
             end_to_end_latency_seconds=total_latency,
             attempts=0,
             accepted=False,
-            outcome="no_fix_available",
-            rejection_reason="scanner_did_not_provide_a_usable_fixed_version",
+            outcome="no_approved_target",
+            rejection_reason=(
+                "no_approved_container_image_target; "
+                "trivy_fixed_version_not_used_as_image_tag"
+            ),
         )
-        return current_manifest, False
 
-    target_image = build_image_reference(original_image, fixed_version)
+        return current_manifest, False
 
     if not image_exists_in_registry(target_image):
         total_latency = time.perf_counter() - run_started
-        print(f"[SKIP] Target image does not exist in registry: {target_image}")
+
+        print(f"[SKIP] Approved target image is unavailable: {target_image}")
 
         log_run(
             workload_kind=workload_kind,
@@ -403,13 +427,14 @@ def process_container(
             attempts=0,
             accepted=False,
             outcome="target_image_unavailable",
-            rejection_reason="target_image_not_found_in_registry",
+            rejection_reason=f"approved_target_not_available: {target_source}",
         )
+
         return current_manifest, False
 
     print(
-        f"[AGENT] Generating remediation for {container_type}/"
-        f"{container_name}: {original_image} -> {target_image}"
+        f"[AGENT] Generating remediation for {container_type}/{container_name}: "
+        f"{original_image} -> {target_image}"
     )
 
     agent_result, attempts, llm_latency = generate_manifest_with_retry(
@@ -427,6 +452,7 @@ def process_container(
 
     if not manifest_text:
         total_latency = time.perf_counter() - run_started
+
         print(f"[REJECTED] No usable LLM output for {container_name}.")
 
         log_run(
@@ -447,9 +473,10 @@ def process_container(
             outcome="rejected",
             rejection_reason="no_manifest_returned",
         )
+
         return current_manifest, False
 
-    valid, reason, validation_latency = validate_manifest(
+    valid, rejection_reason, validation_latency = validate_manifest(
         manifest_text=manifest_text,
         workload_kind=workload_kind,
         workload_name=workload_name,
@@ -461,7 +488,7 @@ def process_container(
     total_latency = time.perf_counter() - run_started
 
     if not valid:
-        print(f"[REJECTED] {container_name}: {reason}")
+        print(f"[REJECTED] {container_name}: {rejection_reason}")
 
         log_run(
             workload_kind=workload_kind,
@@ -479,14 +506,16 @@ def process_container(
             attempts=attempts,
             accepted=False,
             outcome="rejected",
-            rejection_reason=reason,
+            rejection_reason=rejection_reason,
         )
+
         return current_manifest, False
 
     print(
         f"[SAVED] {workload_kind}/{workload_name} | "
         f"{container_type}/{container_name} | "
-        f"attempts={attempts} | total_latency={total_latency:.2f}s"
+        f"attempts={attempts} | "
+        f"end_to_end_latency={total_latency:.2f}s"
     )
 
     log_run(
@@ -511,7 +540,7 @@ def process_container(
 
 
 def process_document(chunk: str, filepath: str) -> tuple[str, bool]:
-    """Process every supported container inside one YAML workload document."""
+    """Process all supported containers in one YAML workload document."""
     try:
         document = yaml.safe_load(chunk)
     except yaml.YAMLError as error:
@@ -525,16 +554,16 @@ def process_document(chunk: str, filepath: str) -> tuple[str, bool]:
     workload_name = document.get("metadata", {}).get("name", "unknown")
     namespace = document.get("metadata", {}).get("namespace", "default")
 
-    changed = False
-    current_manifest = chunk
-
-    # Re-parse before each container, because the previous accepted LLM output
-    # becomes the input for the next target container.
     initial_targets = get_workload_containers(document)
 
     if not initial_targets:
         return chunk, False
 
+    current_manifest = chunk
+    document_changed = False
+
+    # Re-parse after each accepted remediation because the manifest may have
+    # changed during the previous container remediation.
     for initial_target in initial_targets:
         try:
             current_document = yaml.safe_load(current_manifest)
@@ -555,20 +584,19 @@ def process_document(chunk: str, filepath: str) -> tuple[str, bool]:
 
         current_manifest, container_changed = process_container(
             current_manifest=current_manifest,
-            filepath=filepath,
             workload_kind=workload_kind,
             workload_name=workload_name,
             namespace=namespace,
             target=target,
         )
 
-        changed = changed or container_changed
+        document_changed = document_changed or container_changed
 
-    return current_manifest, changed
+    return current_manifest, document_changed
 
 
 def create_or_update_pull_request(updates_made: list[str]) -> None:
-    """Push the remediation branch and create or reuse one open PR."""
+    """Push a remediation branch and create or update one open PR."""
     branch_name = "remediation/bulk-update"
 
     print("\n[GIT] Creating or updating remediation Pull Request...")
@@ -687,7 +715,9 @@ def main() -> None:
 
         if file_changed:
             with open(filepath, "w", encoding="utf-8") as manifest_file:
-                manifest_file.write("\n---\n".join(item.strip("\n") for item in updated_chunks))
+                manifest_file.write(
+                    "\n---\n".join(item.strip("\n") for item in updated_chunks)
+                )
                 manifest_file.write("\n")
 
             updates_made.append(filepath)

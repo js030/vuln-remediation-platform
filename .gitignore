@@ -16,3 +16,7 @@ __pycache__/
 *.pyc
 .vscode/
 .idea/
+
+# Python cache files
+__pycache__/
+*.py[cod]

@@ -1,4 +1,3 @@
-import re
 import yaml
 
 from langchain_ollama import ChatOllama
@@ -20,7 +19,8 @@ manifest_prompt = PromptTemplate(
     ],
     template="""You are a strict Kubernetes configuration remediation agent.
 
-You must update exactly one container image in the Kubernetes YAML manifest.
+Your task is to update exactly one container image in the supplied Kubernetes
+YAML manifest.
 
 TARGET WORKLOAD:
 - Kind: {workload_kind}
@@ -38,10 +38,12 @@ ORIGINAL MANIFEST:
 MANDATORY RULES:
 1. Update only the image field of the target container named "{container_name}".
 2. Replace "{original_image}" exactly with "{target_image}".
-3. Do not modify any other image fields, container names, metadata, replicas,
-   labels, selectors, ports, resources, or Kubernetes object structure.
-4. Preserve the workload kind and workload name.
-5. Return only raw YAML. Do not use Markdown fences or explanations.
+3. Do not modify any other image fields.
+4. Do not modify metadata, labels, selectors, replicas, ports, resources,
+   environment variables, or workload structure.
+5. Preserve the workload kind and workload name.
+6. Return only raw YAML. Do not return Markdown, explanations, comments,
+   or code fences.
 """,
 )
 
@@ -58,7 +60,7 @@ def generate_manifest(
     original_image: str,
     target_image: str,
 ) -> dict:
-    """Generate a proposed manifest update through the LLM."""
+    """Generate a Kubernetes manifest remediation proposal through the LLM."""
     try:
         result_yaml = chain.invoke(
             {

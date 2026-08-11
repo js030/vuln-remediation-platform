@@ -15,15 +15,21 @@ def scan_image(image_name: str) -> dict | None:
     """
     Scan one container image and return the highest-severity CVE finding.
 
-    Returns None when Trivy successfully scans the image but finds no CVEs.
-    Raises RuntimeError when Trivy cannot scan the image at all.
+    Returns:
+        dict: Highest-severity CVE finding.
+        None: No vulnerabilities were found.
+
+    Raises:
+        RuntimeError: Trivy could not scan the image.
     """
     result = subprocess.run(
         [
             "trivy",
             "image",
-            "--format", "json",
-            "--scanners", "vuln",
+            "--format",
+            "json",
+            "--scanners",
+            "vuln",
             "--skip-version-check",
             image_name,
         ],
@@ -50,7 +56,8 @@ def scan_image(image_name: str) -> dict | None:
 
     vulnerabilities.sort(
         key=lambda finding: SEVERITY_WEIGHTS.get(
-            finding.get("Severity", "UNKNOWN"), 0
+            finding.get("Severity", "UNKNOWN"),
+            0,
         ),
         reverse=True,
     )
@@ -78,8 +85,10 @@ def scan_image_all_findings(
         [
             "trivy",
             "image",
-            "--format", "json",
-            "--scanners", "vuln",
+            "--format",
+            "json",
+            "--scanners",
+            "vuln",
             "--skip-version-check",
             image_name,
         ],
@@ -101,7 +110,8 @@ def scan_image_all_findings(
                     "type": "cve",
                     "severity": vulnerability.get("Severity", "UNKNOWN"),
                     "title": vulnerability.get(
-                        "Title", vulnerability.get("VulnerabilityID")
+                        "Title",
+                        vulnerability.get("VulnerabilityID"),
                     ),
                     "affected_asset": image_name,
                     "fixed_version": vulnerability.get("FixedVersion"),
@@ -118,7 +128,10 @@ def scan_image_all_findings(
     ]
 
     findings.sort(
-        key=lambda finding: SEVERITY_WEIGHTS.get(finding["severity"], 0),
+        key=lambda finding: SEVERITY_WEIGHTS.get(
+            finding["severity"],
+            0,
+        ),
         reverse=True,
     )
 
