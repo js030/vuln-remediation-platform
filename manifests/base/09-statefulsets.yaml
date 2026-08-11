@@ -8,7 +8,7 @@ spec:
   selector:
     app: mongodb
   ports:
-  - port: 27017
+    - port: 27017
 
 ---
 apiVersion: apps/v1
@@ -28,10 +28,10 @@ spec:
         app: mongodb
     spec:
       containers:
-      - name: mongodb
-        image: mongo:3.6.0
-        ports:
-        - containerPort: 27017
+        - name: mongodb
+          image: mongo:3.6.0
+          ports:
+            - containerPort: 27017
 
 ---
 apiVersion: apps/v1
@@ -49,5 +49,5 @@ spec:
         app: monitoring
     spec:
       containers:
-      - name: agent
-        image: prometheus/node-exporter:v0.15.0
+        - name: agent
+          image: prom/node-exporter:v1.0.1

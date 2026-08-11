@@ -29,9 +29,18 @@ SUPPORTED_SEVERITIES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 # 2. can be pulled by the cluster,
 # 3. is acceptable for the workload.
 APPROVED_IMAGE_REMEDIATION_MAP = {
+    # Core Deployment scenarios
     "nginx:1.14.0": "nginx:1.24.0",
     "redis:5.0.9": "redis:7.0.14",
     "httpd:2.4.49": "httpd:2.4.58",
+
+    # Complex workload scenarios
+    # MongoDB is a controlled PoC upgrade scenario. Production use would
+    # require compatibility checks, backup validation and migration approval.
+    "mongo:3.6.0": "mongo:4.4.29",
+
+    # DaemonSet scenario: both images are available from Docker Hub.
+    "prom/node-exporter:v1.0.1": "prom/node-exporter:v1.8.2",
 }
 
 MAX_RETRIES = 2
